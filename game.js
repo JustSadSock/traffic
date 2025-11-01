@@ -1244,43 +1244,64 @@ function drawBackground() {
 
 function drawRoads() {
   ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  const segments = [];
   for (const [a, b] of state.map.edges || []) {
     const na = nodeById(a);
     const nb = nodeById(b);
     if (!na || !nb) continue;
-    const angle = Math.atan2(nb.y - na.y, nb.x - na.x);
-    const length = distance(na, nb);
-    ctx.save();
-    ctx.translate(na.x, na.y);
-    ctx.rotate(angle);
-    ctx.fillStyle = '#1f2a37';
-    ctx.beginPath();
-    ctx.roundRect(0, -ROAD_WIDTH / 2 - 3, length, ROAD_WIDTH + 6, ROAD_WIDTH / 2);
-    ctx.fill();
-    ctx.fillStyle = '#2e3a48';
-    ctx.beginPath();
-    ctx.roundRect(0, -ROAD_WIDTH / 2, length, ROAD_WIDTH, ROAD_WIDTH / 2);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-    const dash = 28;
-    const gap = 18;
-    const stripeWidth = 4;
-    for (let offset = 12; offset < length - dash; offset += dash + gap) {
-      const segment = Math.min(dash, length - offset - gap * 0.5);
-      if (segment <= 0) break;
-      ctx.fillRect(offset, -stripeWidth / 2, segment, stripeWidth);
-    }
-    ctx.restore();
+    segments.push({ ax: na.x, ay: na.y, bx: nb.x, by: nb.y });
   }
+
+  if (!segments.length) {
+    ctx.restore();
+    return;
+  }
+
+  const strokeNetwork = (color, width, alpha = 1) => {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    for (const segment of segments) {
+      ctx.moveTo(segment.ax, segment.ay);
+      ctx.lineTo(segment.bx, segment.by);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  strokeNetwork('#141c24', ROAD_WIDTH + 12, 0.8);
+  strokeNetwork('#1f2a37', ROAD_WIDTH + 6, 0.95);
+  strokeNetwork('#2e3a48', ROAD_WIDTH, 1);
+
   ctx.fillStyle = '#2e3a48';
   ctx.strokeStyle = '#1c2632';
-  ctx.lineWidth = 6;
+  ctx.lineWidth = 4;
+  const padRadius = ROAD_WIDTH * 0.58;
   for (const node of state.map.nodes) {
     ctx.beginPath();
-    ctx.arc(node.x, node.y, ROAD_WIDTH * 0.62, 0, Math.PI * 2);
+    ctx.arc(node.x, node.y, padRadius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.lineWidth = 4;
+  ctx.setLineDash([26, 18]);
+  ctx.lineDashOffset = -12;
+  ctx.beginPath();
+  for (const segment of segments) {
+    ctx.moveTo(segment.ax, segment.ay);
+    ctx.lineTo(segment.bx, segment.by);
+  }
+  ctx.stroke();
+  ctx.restore();
+
   ctx.restore();
 }
 
