@@ -214,6 +214,15 @@ function createRoom(socket, name) {
   return room;
 }
 
+function findAutoRoom() {
+  for (const room of rooms.values()) {
+    if (room.state === 'lobby' && room.players.length < 4) {
+      return room;
+    }
+  }
+  return null;
+}
+
 function addPlayer(room, socket, name, isHost = false) {
   const id = `p${clientCounter++}`;
   const color = PLAYER_COLORS[room.players.length % PLAYER_COLORS.length];
@@ -430,7 +439,16 @@ wss.on('connection', (ws) => {
     }
     if (data.type === 'hello') {
       const { name, action, room: code } = data.payload || {};
-      if (action === 'create') {
+      if (action === 'auto') {
+        let room = findAutoRoom();
+        if (!room) {
+          room = createRoom(ws, name);
+          notifyLobby(room, `Лобби ${room.code}. Ждём соперников (2–4 игроков).`);
+        } else {
+          const player = addPlayer(room, ws, name, false);
+          notifyLobby(room, `${player.name} подключился. Игроков: ${room.players.length}.`);
+        }
+      } else if (action === 'create') {
         const room = createRoom(ws, name);
         notifyLobby(room, `Лобби ${room.code}. Ждём соперников (2–4 игроков).`);
       } else if (action === 'join') {

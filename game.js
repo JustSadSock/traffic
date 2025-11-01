@@ -83,6 +83,7 @@ const graph = buildGraph(MAP);
 
 const elements = {
   canvas: document.getElementById('gameCanvas'),
+  board: document.querySelector('.board'),
   hint: document.getElementById('hint'),
   btnAdvance: document.getElementById('btnAdvance'),
   btnToggleNodes: document.getElementById('btnToggleNodes'),
@@ -91,20 +92,27 @@ const elements = {
   turnLabel: document.getElementById('turnLabel'),
   activePlayerLabel: document.getElementById('activePlayerLabel'),
   modeScreen: document.getElementById('modeScreen'),
-  modeExtra: document.getElementById('modeExtra'),
+  modeDetails: document.getElementById('modeDetails'),
   btnStart: document.getElementById('btnStart'),
   stopAmount: document.getElementById('stopAmount'),
   stopAmountLabel: document.getElementById('stopAmountLabel'),
   stopHandle: document.getElementById('stopHandle'),
   scorePlayers: document.getElementById('scorePlayers'),
+  prefShowNodes: document.getElementById('prefShowNodes'),
+  prefPlayerName: document.getElementById('prefPlayerName'),
 };
 
 const ctx = elements.canvas.getContext('2d');
+const view = { scale: 1, pixelScale: 1 };
 
 const state = {
   running: false,
   mode: null,
   showNodes: false,
+  preferences: {
+    showNodes: false,
+    playerName: '',
+  },
   players: [],
   vehicles: [],
   selectedVehicleId: null,
@@ -148,6 +156,57 @@ const nodeById = (id) => graph.get(id);
 
 function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function resizeCanvas() {
+  if (!elements.board) return;
+  const rect = elements.board.getBoundingClientRect();
+  const availableWidth = rect.width;
+  const availableHeight = rect.height;
+  if (!availableWidth || !availableHeight) {
+    return;
+  }
+  const ratio = window.devicePixelRatio || 1;
+  const scale = Math.min(availableWidth / MAP.width, availableHeight / MAP.height);
+  const displayWidth = Math.max(MAP.width * scale, 1);
+  const displayHeight = Math.max(MAP.height * scale, 1);
+  elements.canvas.style.width = `${displayWidth}px`;
+  elements.canvas.style.height = `${displayHeight}px`;
+  elements.canvas.width = Math.max(1, Math.round(displayWidth * ratio));
+  elements.canvas.height = Math.max(1, Math.round(displayHeight * ratio));
+  view.scale = scale;
+  view.pixelScale = scale * ratio;
+}
+
+function loadPreferences() {
+  const defaults = {
+    playerName: 'Диспетчер',
+    showNodes: false,
+  };
+  try {
+    const storage = typeof window !== 'undefined' ? window.localStorage : null;
+    const storedName = storage?.getItem('trafficity.playerName');
+    if (storedName && storedName.trim().length) {
+      state.preferences.playerName = storedName.trim();
+    } else {
+      state.preferences.playerName = defaults.playerName;
+    }
+    const storedNodes = storage?.getItem('trafficity.showNodes');
+    if (typeof storedNodes === 'string') {
+      state.preferences.showNodes = storedNodes === 'true';
+    } else {
+      state.preferences.showNodes = defaults.showNodes;
+    }
+  } catch (err) {
+    state.preferences.playerName = defaults.playerName;
+    state.preferences.showNodes = defaults.showNodes;
+  }
+  if (elements.prefPlayerName) {
+    elements.prefPlayerName.value = state.preferences.playerName;
+  }
+  if (elements.prefShowNodes) {
+    elements.prefShowNodes.checked = state.preferences.showNodes;
+  }
 }
 
 function shortestPath(start, goal) {
@@ -212,7 +271,8 @@ function createVehicle(player, index, startNode) {
 
 function startSoloGame() {
   resetState();
-  const human = createPlayer('player', 'Вы', 'human', PLAYER_COLORS[0]);
+  const displayName = (state.preferences.playerName || '').trim() || 'Вы';
+  const human = createPlayer('player', displayName, 'human', PLAYER_COLORS[0]);
   const ai = createPlayer('ai', 'Автопилот', 'ai', PLAYER_COLORS[1]);
   state.players = [human, ai];
   state.localPlayerId = human.id;
@@ -230,7 +290,12 @@ function startSoloGame() {
 function startLocalGame(names) {
   resetState();
   state.players = names.map((name, idx) =>
-    createPlayer(`p${idx + 1}`, name || `Игрок ${idx + 1}`, 'human', PLAYER_COLORS[idx % PLAYER_COLORS.length])
+    createPlayer(
+      `p${idx + 1}`,
+      (name && name.trim().length ? name.trim() : `Игрок ${idx + 1}`),
+      'human',
+      PLAYER_COLORS[idx % PLAYER_COLORS.length]
+    )
   );
   state.localPlayerId = state.players[0].id;
   state.activePlayer = null;
@@ -280,12 +345,12 @@ function resetState() {
   state.localPlayerId = null;
   state.online = null;
   state.activePlayer = null;
-  state.showNodes = false;
+  state.showNodes = !!state.preferences.showNodes;
   state.roomCode = null;
   state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
   state.stopDrag = { active: false, vehicleId: null, amount: 1, hoverNode: null };
   elements.log.innerHTML = '';
-  elements.btnToggleNodes.textContent = 'Показать узлы';
+  elements.btnToggleNodes.textContent = state.showNodes ? 'Скрыть узлы' : 'Показать узлы';
   elements.stopHandle.disabled = true;
   updateHint();
 }
@@ -526,9 +591,20 @@ elements.stopAmount.addEventListener('input', () => {
   state.stopDrag.amount = Number(elements.stopAmount.value) || 1;
 });
 
+loadPreferences();
 setupModeSelection();
 setupCanvasInteractions();
 setupStopDrag();
+if (typeof ResizeObserver !== 'undefined' && elements.board) {
+  const observer = new ResizeObserver(() => resizeCanvas());
+  observer.observe(elements.board);
+} else {
+  window.addEventListener('resize', resizeCanvas);
+}
+window.addEventListener('orientationchange', () => {
+  window.setTimeout(resizeCanvas, 120);
+});
+resizeCanvas();
 renderLoop();
 updateUI();
 
@@ -655,224 +731,11 @@ function handleCanvasPointerLeave(event) {
 
 function getCanvasCoordinates(event) {
   const rect = elements.canvas.getBoundingClientRect();
-  const scaleX = elements.canvas.width / rect.width;
-  const scaleY = elements.canvas.height / rect.height;
-  const clientX = event.clientX ?? 0;
-  const clientY = event.clientY ?? 0;
-  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
-}
-
-function hitVehicle(x, y) {
-  const radius = 34;
-  return state.vehicles.find((vehicle) => {
-    const node = nodeById(vehicle.current);
-    return distance({ x, y }, node) <= radius;
-  }) || null;
-}
-
-function startRouteDrag(pointerId, vehicle) {
-  state.interaction = { active: true, type: 'route', vehicleId: vehicle.id, path: [vehicle.current], hoverNode: null, pointerId };
-  setHint(`Ведите маршрут до цели ${vehicle.goal}.`);
-}
-
-function updateRouteDrag(x, y) {
-  if (!state.interaction.active || state.interaction.type !== 'route') return;
-  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
-  if (!vehicle) return;
-  const nearest = findNearestNode(x, y, 42);
-  state.interaction.hoverNode = nearest ? nearest.id : null;
-  if (!nearest) return;
-  const path = state.interaction.path;
-  const last = path[path.length - 1];
-  if (nearest.id === last) return;
-  if (!graph.get(last).neighbors.has(nearest.id)) return;
-  if (path.length >= 2 && nearest.id === path[path.length - 2]) {
-    path.pop();
-    setHint('Шаг назад по маршруту.');
-    return;
+  if (!rect.width || !rect.height) {
+    return { x: 0, y: 0 };
   }
-  if (path.includes(nearest.id) && nearest.id !== vehicle.goal) {
-    setHint('Нельзя зациклить маршрут, кроме цели.');
-    return;
-  }
-  path.push(nearest.id);
-  if (nearest.id === vehicle.goal) {
-    setHint('Отпустите, чтобы подтвердить маршрут.');
-  } else {
-    setHint(`Продолжайте к цели ${vehicle.goal}.`);
-  }
-}
-
-function finishRouteDrag() {
-  if (!state.interaction.active || state.interaction.type !== 'route') {
-    state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
-    return;
-  }
-  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
-  if (!vehicle) {
-    state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
-    return;
-  }
-  const path = state.interaction.path;
-  const goalReached = path[path.length - 1] === vehicle.goal;
-  if (path.length > 1 && goalReached) {
-    commitRoute(vehicle, path);
-  } else {
-    setHint(`Маршрут не завершён. Дотяните до цели ${vehicle.goal}.`);
-  }
-  state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
-}
-
-function commitRoute(vehicle, path, remote = false) {
-  if (state.mode === 'online' && !remote) {
-    sendOnlineUpdate({ type: 'setRoute', vehicle: vehicle.id, path });
-    setHint('Маршрут отправлен на сервер.');
-    return;
-  }
-  vehicle.route = path.slice(1);
-  vehicle.history = path.slice();
-  vehicle.waiting = 0;
-  logEvent(`${vehicle.label} меняет маршрут: ${path.join(' → ')}.`);
-  updateUI();
-}
-
-function applyStopOrder(vehicle, nodeId, amount, remote = false) {
-  if (state.mode === 'online' && !remote) {
-    sendOnlineUpdate({ type: 'stop', vehicle: vehicle.id, node: nodeId, amount });
-    setHint('Стоп отправлен на сервер.');
-    return;
-  }
-  if (!vehicle.stopOrders) vehicle.stopOrders = {};
-  vehicle.stopOrders[nodeId] = amount;
-  logEvent(`${vehicle.label} поставит стоп на узле ${nodeId} (${amount} ход(ов)).`);
-  updateUI();
-}
-
-function setupStopDrag() {
-  elements.stopHandle.addEventListener('dragstart', handleStopDragStart);
-  elements.stopHandle.addEventListener('dragend', handleStopDragEnd);
-  elements.canvas.addEventListener('dragover', handleCanvasDragOver);
-  elements.canvas.addEventListener('dragleave', handleCanvasDragLeave);
-  elements.canvas.addEventListener('drop', handleCanvasDrop);
-}
-
-function handleStopDragStart(event) {
-  const vehicle = getSelectedVehicle();
-  if (!vehicle || !canControlVehicle(vehicle)) {
-    event.preventDefault();
-    return;
-  }
-  const amount = Number(elements.stopAmount.value) || 1;
-  state.stopDrag = { active: true, vehicleId: vehicle.id, amount, hoverNode: null };
-  event.dataTransfer.setData('text/plain', 'stop');
-  event.dataTransfer.effectAllowed = 'copy';
-  setHint(`Перетащите стоп на узел для ${vehicle.label}.`);
-}
-
-function handleStopDragEnd() {
-  state.stopDrag.hoverNode = null;
-  state.stopDrag.active = false;
-  state.stopDrag.vehicleId = null;
-  state.stopDrag.amount = Number(elements.stopAmount.value) || 1;
-  updateHint();
-}
-
-function handleCanvasDragOver(event) {
-  if (!state.stopDrag.active) return;
-  event.preventDefault();
-  const { x, y } = getCanvasCoordinates(event);
-  const nearest = findNearestNode(x, y, 40);
-  state.stopDrag.hoverNode = nearest ? nearest.id : null;
-  if (nearest) {
-    event.dataTransfer.dropEffect = 'copy';
-    setHint(`Стоп на узле ${nearest.id}. Отпустите, чтобы применить.`);
-  } else {
-    setHint('Перетащите жетон на узел дороги.');
-  }
-}
-
-function handleCanvasDragLeave() {
-  if (!state.stopDrag.active) return;
-  state.stopDrag.hoverNode = null;
-  updateHint();
-}
-
-function handleCanvasDrop(event) {
-  if (!state.stopDrag.active) return;
-  event.preventDefault();
-  const { hoverNode, vehicleId, amount } = state.stopDrag;
-  const vehicle = state.vehicles.find((v) => v.id === vehicleId);
-  if (!vehicle || !canControlVehicle(vehicle)) {
-    handleStopDragEnd();
-    return;
-  }
-  let nodeId = hoverNode;
-  if (!nodeId) {
-    const { x, y } = getCanvasCoordinates(event);
-    const nearest = findNearestNode(x, y, 40);
-    nodeId = nearest ? nearest.id : null;
-  }
-  if (!nodeId) {
-    setHint('Стоп можно ставить только на узлах.');
-    handleStopDragEnd();
-    return;
-  }
-  applyStopOrder(vehicle, nodeId, amount);
-  handleStopDragEnd();
-}
-
-function setupCanvasInteractions() {
-  elements.canvas.addEventListener('pointerdown', handleCanvasPointerDown);
-  elements.canvas.addEventListener('pointermove', handleCanvasPointerMove);
-  elements.canvas.addEventListener('pointerup', handleCanvasPointerUp);
-  elements.canvas.addEventListener('pointerleave', handleCanvasPointerLeave);
-}
-
-function handleCanvasPointerDown(event) {
-  const coords = getCanvasCoordinates(event);
-  const vehicle = hitVehicle(coords.x, coords.y);
-  if (vehicle && canControlVehicle(vehicle)) {
-    if (state.selectedVehicleId !== vehicle.id) {
-      state.selectedVehicleId = vehicle.id;
-      renderVehicleList();
-      updateActionButtons();
-    }
-    highlightVehicle(vehicle);
-    startRouteDrag(event.pointerId, vehicle);
-    elements.canvas.setPointerCapture(event.pointerId);
-    event.preventDefault();
-    return;
-  }
-  const nearest = findNearestNode(coords.x, coords.y, 28);
-  if (nearest) {
-    selectVehicleFromMap(nearest.id);
-  }
-}
-
-function handleCanvasPointerMove(event) {
-  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
-  const coords = getCanvasCoordinates(event);
-  updateRouteDrag(coords.x, coords.y);
-}
-
-function handleCanvasPointerUp(event) {
-  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
-  finishRouteDrag();
-  if (elements.canvas.hasPointerCapture(event.pointerId)) {
-    elements.canvas.releasePointerCapture(event.pointerId);
-  }
-}
-
-function handleCanvasPointerLeave(event) {
-  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
-  const coords = getCanvasCoordinates(event);
-  updateRouteDrag(coords.x, coords.y);
-}
-
-function getCanvasCoordinates(event) {
-  const rect = elements.canvas.getBoundingClientRect();
-  const scaleX = elements.canvas.width / rect.width;
-  const scaleY = elements.canvas.height / rect.height;
+  const scaleX = MAP.width / rect.width;
+  const scaleY = MAP.height / rect.height;
   const clientX = event.clientX ?? 0;
   const clientY = event.clientY ?? 0;
   return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
@@ -1018,6 +881,9 @@ function renderLoop() {
 }
 
 function drawScene() {
+  const pixelScale = view.pixelScale || window.devicePixelRatio || 1;
+  ctx.save();
+  ctx.setTransform(pixelScale, 0, 0, pixelScale, 0, 0);
   ctx.clearRect(0, 0, MAP.width, MAP.height);
   drawBackground();
   drawRoads();
@@ -1029,6 +895,7 @@ function drawScene() {
   if (state.showNodes || !state.running || !state.mode) {
     drawNodes();
   }
+  ctx.restore();
 }
 
 function drawBackground() {
@@ -1262,110 +1129,194 @@ function checkEndGame() {
 
 function setupModeSelection() {
   const modeCards = Array.from(document.querySelectorAll('.mode-card'));
+  const details = elements.modeDetails;
+  const storage = typeof window !== 'undefined' ? window.localStorage : null;
+  const localState = {
+    count: 2,
+    names: [
+      state.preferences.playerName || 'Игрок 1',
+      'Игрок 2',
+      'Игрок 3',
+      'Игрок 4',
+    ],
+  };
   let selectedMode = null;
-  let localNames = ['Игрок 1', 'Игрок 2'];
+
+  const playerCountText = (count) => {
+    if (count === 1) return '1 игрок';
+    if (count >= 2 && count <= 4) return `${count} игрока`;
+    return `${count} игроков`;
+  };
+
+  const setCardSelection = (mode) => {
+    modeCards.forEach((card) => {
+      const active = card.dataset.mode === mode;
+      card.classList.toggle('selected', active);
+      card.setAttribute('aria-selected', String(active));
+    });
+  };
+
   const ensureStartState = () => {
     if (!selectedMode) {
       elements.btnStart.disabled = true;
       return;
     }
     if (selectedMode === 'local') {
-      const inputs = Array.from(elements.modeExtra.querySelectorAll('input[type="text"]'));
-      const ready = inputs.every((input) => input.value.trim().length > 0);
+      const ready = localState.names
+        .slice(0, localState.count)
+        .every((name, index) => {
+          const trimmed = (name || '').trim();
+          if (!trimmed.length) return false;
+          localState.names[index] = name;
+          return true;
+        });
       elements.btnStart.disabled = !ready;
-      if (ready) {
-        localNames = inputs.map((input) => input.value.trim());
-      }
       return;
     }
     if (selectedMode === 'online') {
-      const nameInput = elements.modeExtra.querySelector('input[name="playerName"]');
-      const roomInput = elements.modeExtra.querySelector('input[name="roomCode"]');
-      const action = elements.modeExtra.querySelector('select[name="action"]');
-      const ready = nameInput.value.trim().length > 0 && action.value !== 'join' ? true : roomInput.value.trim().length === 4;
-      elements.btnStart.disabled = !ready;
+      const hasName = (state.preferences.playerName || '').trim().length > 0;
+      elements.btnStart.disabled = !hasName;
       return;
     }
     elements.btnStart.disabled = false;
   };
 
-  const renderLocalForm = (count = 2) => {
-    elements.modeExtra.classList.add('visible');
-    elements.modeExtra.innerHTML = '';
-    const label = document.createElement('label');
-    label.textContent = 'Количество игроков';
-    const selector = document.createElement('input');
-    selector.type = 'range';
-    selector.min = '2';
-    selector.max = '4';
-    selector.step = '1';
-    selector.value = String(count);
-    const counter = document.createElement('div');
-    counter.textContent = `${count} игрока`;
-    selector.addEventListener('input', () => {
-      const value = Number(selector.value);
-      counter.textContent = value === 4 ? '4 игрока' : `${value} игрока`;
-      renderLocalForm(value);
+  const renderSoloDetails = () => {
+    if (!details) return;
+    details.innerHTML = '';
+    const intro = document.createElement('p');
+    intro.textContent = 'Сразитесь с автопилотом. Ваша цель — быстрее доставить пассажиров по скрытым узлам.';
+    const tip = document.createElement('p');
+    tip.textContent = 'Совет: протяните маршрут прямо от машин и используйте стопы, чтобы задерживать соперника.';
+    details.append(intro, tip);
+  };
+
+  const renderLocalDetails = () => {
+    if (!details) return;
+    details.innerHTML = '';
+    const info = document.createElement('p');
+    info.textContent = 'Настройте количество игроков (2–4) и впишите имена, чтобы различать маршруты.';
+    const sliderField = document.createElement('div');
+    sliderField.className = 'field';
+    const sliderLabel = document.createElement('span');
+    sliderLabel.textContent = 'Количество игроков';
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '2';
+    slider.max = '4';
+    slider.step = '1';
+    slider.value = String(localState.count);
+    const sliderValue = document.createElement('output');
+    sliderValue.textContent = playerCountText(localState.count);
+    slider.addEventListener('input', () => {
+      localState.count = Number(slider.value);
+      sliderValue.textContent = playerCountText(localState.count);
+      if (!localState.names[localState.count - 1]) {
+        localState.names[localState.count - 1] = `Игрок ${localState.count}`;
+      }
+      renderLocalDetails();
+      ensureStartState();
     });
-    elements.modeExtra.append(label, selector, counter);
-    for (let i = 0; i < count; i++) {
+    sliderField.append(sliderLabel, slider, sliderValue);
+
+    const names = document.createElement('div');
+    names.className = 'names';
+    for (let i = 0; i < localState.count; i += 1) {
+      if (!localState.names[i] || !localState.names[i].trim().length) {
+        localState.names[i] = `Игрок ${i + 1}`;
+      }
       const input = document.createElement('input');
       input.type = 'text';
-      input.placeholder = `Имя игрока ${i + 1}`;
-      input.value = localNames[i] || '';
-      input.addEventListener('input', ensureStartState);
-      elements.modeExtra.appendChild(input);
+      input.value = localState.names[i];
+      input.placeholder = `Игрок ${i + 1}`;
+      input.addEventListener('input', () => {
+        localState.names[i] = input.value;
+        ensureStartState();
+      });
+      names.appendChild(input);
     }
+
+    details.append(info, sliderField, names);
+  };
+
+  const renderOnlineDetails = () => {
+    if (!details) return;
+    details.innerHTML = '';
+    const summary = document.createElement('p');
+    summary.textContent = 'Мы подключим вас к серверу irgri.uk и автоматически подберём свободную комнату.';
+    const nameInfo = document.createElement('p');
+    const currentName = (state.preferences.playerName || '').trim() || 'Диспетчер';
+    nameInfo.innerHTML = `Ваше имя в лобби: <strong>${currentName}</strong>. Измените его в настройках слева.`;
+    const tip = document.createElement('p');
+    tip.textContent = 'После подключения дождитесь второго игрока и нажмите «Следующий ход», чтобы начать партию.';
+    details.append(summary, nameInfo, tip);
+  };
+
+  const renderDetails = () => {
+    if (!details) return;
+    if (!selectedMode) {
+      details.innerHTML = '';
+      const placeholder = document.createElement('p');
+      placeholder.textContent = 'Выберите режим, чтобы увидеть настройки матча.';
+      details.appendChild(placeholder);
+      elements.btnStart.textContent = 'Начать игру';
+      elements.btnStart.disabled = true;
+      return;
+    }
+    if (selectedMode === 'solo') {
+      renderSoloDetails();
+    } else if (selectedMode === 'local') {
+      renderLocalDetails();
+    } else if (selectedMode === 'online') {
+      renderOnlineDetails();
+    }
+    elements.btnStart.textContent = selectedMode === 'online' ? 'Подключиться' : 'Начать игру';
     ensureStartState();
   };
 
-  const renderOnlineForm = () => {
-    elements.modeExtra.classList.add('visible');
-    elements.modeExtra.innerHTML = '';
-    const name = document.createElement('input');
-    name.type = 'text';
-    name.name = 'playerName';
-    name.placeholder = 'Ваше имя';
-    const action = document.createElement('select');
-    action.name = 'action';
-    action.innerHTML = `
-      <option value="create">Создать лобби</option>
-      <option value="join">Войти по коду</option>
-    `;
-    const room = document.createElement('input');
-    room.type = 'text';
-    room.name = 'roomCode';
-    room.placeholder = 'Код (например, XRAY)';
-    room.maxLength = 4;
-    room.style.textTransform = 'uppercase';
-    elements.modeExtra.append(name, action, room);
-    elements.btnStart.textContent = 'Подключиться';
-    const handleChange = () => {
-      room.disabled = action.value === 'create';
-      ensureStartState();
-    };
-    name.addEventListener('input', ensureStartState);
-    room.addEventListener('input', ensureStartState);
-    action.addEventListener('change', handleChange);
-    handleChange();
-  };
+  function selectMode(mode) {
+    selectedMode = mode;
+    setCardSelection(mode);
+    renderDetails();
+  }
 
   modeCards.forEach((card) => {
     card.addEventListener('click', () => {
-      modeCards.forEach((other) => other.classList.remove('selected'));
-      card.classList.add('selected');
-      selectedMode = card.dataset.mode;
-      elements.modeExtra.classList.remove('visible');
-      elements.modeExtra.innerHTML = '';
-      elements.btnStart.textContent = 'Старт';
-      if (selectedMode === 'local') {
-        renderLocalForm();
-      } else if (selectedMode === 'online') {
-        renderOnlineForm();
-      }
-      ensureStartState();
+      selectMode(card.dataset.mode);
     });
   });
+
+  if (elements.prefShowNodes) {
+    elements.prefShowNodes.addEventListener('change', () => {
+      state.preferences.showNodes = elements.prefShowNodes.checked;
+      try {
+        storage?.setItem('trafficity.showNodes', String(state.preferences.showNodes));
+      } catch (err) {
+        /* ignore */
+      }
+    });
+  }
+
+  if (elements.prefPlayerName) {
+    elements.prefPlayerName.addEventListener('input', () => {
+      const raw = elements.prefPlayerName.value;
+      const trimmed = raw.trim();
+      state.preferences.playerName = trimmed;
+      if (!localState.names[0] || localState.names[0].startsWith('Игрок ')) {
+        localState.names[0] = trimmed || 'Игрок 1';
+      }
+      try {
+        storage?.setItem('trafficity.playerName', trimmed);
+      } catch (err) {
+        /* ignore */
+      }
+      if (selectedMode === 'online') {
+        renderDetails();
+      } else {
+        ensureStartState();
+      }
+    });
+  }
 
   elements.btnStart.addEventListener('click', () => {
     if (!selectedMode) return;
@@ -1374,18 +1325,21 @@ function setupModeSelection() {
     if (selectedMode === 'solo') {
       startSoloGame();
     } else if (selectedMode === 'local') {
-      const inputs = Array.from(elements.modeExtra.querySelectorAll('input[type="text"]'));
-      const names = inputs.map((input) => input.value.trim());
-      startLocalGame(names);
+      const preparedNames = localState.names
+        .slice(0, localState.count)
+        .map((name, index) => {
+          const trimmed = (name || '').trim();
+          return trimmed.length ? trimmed : `Игрок ${index + 1}`;
+        });
+      startLocalGame(preparedNames);
     } else if (selectedMode === 'online') {
-      const nameInput = elements.modeExtra.querySelector('input[name="playerName"]');
-      const roomInput = elements.modeExtra.querySelector('input[name="roomCode"]');
-      const action = elements.modeExtra.querySelector('select[name="action"]');
-      startOnlineGame({ name: nameInput.value.trim(), room: roomInput.value.trim().toUpperCase(), action: action.value });
+      const name = (state.preferences.playerName || '').trim() || 'Игрок';
+      startOnlineGame({ name, action: 'auto' });
     }
   });
-}
 
+  selectMode('solo');
+}
 function setupOnlineGame(payload) {
   state.running = true;
   state.turnLimit = payload.turnLimit || TURN_LIMIT;

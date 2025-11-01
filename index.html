@@ -64,33 +64,60 @@
       </main>
     </div>
 
-    <div id="modeScreen" class="modal visible" role="dialog" aria-modal="true">
-      <div class="modal-card">
-        <header>
-          <h2>Выберите режим</h2>
-          <p>Минимализм, милые цвета и вечная дуэль за самый быстрый маршрут.</p>
-        </header>
-        <div class="mode-grid">
-          <button class="mode-card" data-mode="solo">
-            <span class="icon">🤖</span>
-            <strong>Одиночный матч</strong>
-            <p>Две ваши машины против автопилота. Спланируйте лучше за 30 ходов.</p>
-          </button>
-          <button class="mode-card" data-mode="local">
-            <span class="icon">👥</span>
-            <strong>Локальная дуэль</strong>
-            <p>2–4 игроков на одном устройстве. Каждому по две маршрутки.</p>
-          </button>
-          <button class="mode-card" data-mode="online">
-            <span class="icon">🌐</span>
-            <strong>Онлайн</strong>
-            <p>Создайте лобби или подключитесь к другу на https://irgri.uk/.</p>
-          </button>
-        </div>
-        <div id="modeExtra" class="mode-extra"></div>
-        <footer class="modal-footer">
-          <button id="btnStart" class="primary" disabled>Старт</button>
-        </footer>
+    <div id="modeScreen" class="menu visible" role="dialog" aria-modal="true">
+      <div class="menu-shell">
+        <section class="menu-hero">
+          <div class="menu-title">
+            <h2>Trafficity</h2>
+            <p>
+              Дуэль маршрутов в уютном минимализме: протягивайте линии по скрытым узлам,
+              ставьте стопы и обгоняйте соперника за 30 ходов.
+            </p>
+          </div>
+          <div class="menu-settings">
+            <h3>Настройки диспетчера</h3>
+            <label class="field">
+              <span>Ваше имя</span>
+              <input id="prefPlayerName" type="text" maxlength="24" placeholder="Например, Виолетта" />
+            </label>
+            <label class="toggle">
+              <input id="prefShowNodes" type="checkbox" />
+              <span>Показывать узлы на старте партии</span>
+            </label>
+            <ul class="menu-highlights">
+              <li>🎯 Карта создавалась для честной дуэли «кто быстрее».</li>
+              <li>🖱️ Маршруты задаются простым перетягиванием от машин.</li>
+              <li>📱 Интерфейс адаптирован под экраны ПК и телефонов.</li>
+            </ul>
+          </div>
+        </section>
+        <section class="menu-panel">
+          <header class="menu-header">
+            <h3>Режим</h3>
+            <p>Выберите тип партии и настройте параметры, затем нажмите «Начать».</p>
+          </header>
+          <div class="mode-grid" role="tablist">
+            <button class="mode-card" data-mode="solo" role="tab" aria-selected="false">
+              <span class="icon">🤖</span>
+              <strong>Одиночная дуэль</strong>
+              <p>Сразитесь с автопилотом, управляя двумя машинами.</p>
+            </button>
+            <button class="mode-card" data-mode="local" role="tab" aria-selected="false">
+              <span class="icon">👥</span>
+              <strong>Локальная игра</strong>
+              <p>2–4 человека по очереди планируют маршруты на одном устройстве.</p>
+            </button>
+            <button class="mode-card" data-mode="online" role="tab" aria-selected="false">
+              <span class="icon">🌐</span>
+              <strong>Онлайн матч</strong>
+              <p>Подключаемся к серверу irgri.uk автоматически и находим соперников.</p>
+            </button>
+          </div>
+          <div id="modeDetails" class="mode-details" role="tabpanel"></div>
+          <footer class="menu-footer">
+            <button id="btnStart" class="primary" disabled>Начать игру</button>
+          </footer>
+        </section>
       </div>
     </div>
 
