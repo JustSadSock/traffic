@@ -4,10 +4,83 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
-const TURN_LIMIT = 40;
-const PASSENGER_VALUE = 12;
-const PASSENGER_LIFETIME = 10;
-const COLORS = ['#f94144', '#277da1', '#f9c74f', '#90be6d'];
+const TURN_LIMIT = 30;
+const PLAYER_COLORS = ['#ff8ba7', '#70d6ff', '#ffd166', '#6ef2a5'];
+const VEHICLE_EMOJIS = ['①', '②'];
+
+const MAP = {
+  nodes: [
+    { id: 'A', x: 150, y: 560 },
+    { id: 'B', x: 210, y: 420 },
+    { id: 'C', x: 250, y: 290 },
+    { id: 'D', x: 360, y: 180 },
+    { id: 'E', x: 520, y: 130 },
+    { id: 'F', x: 690, y: 150 },
+    { id: 'G', x: 840, y: 230 },
+    { id: 'H', x: 910, y: 330 },
+    { id: 'I', x: 950, y: 470 },
+    { id: 'J', x: 860, y: 600 },
+    { id: 'K', x: 700, y: 660 },
+    { id: 'L', x: 520, y: 690 },
+    { id: 'M', x: 360, y: 650 },
+    { id: 'N', x: 250, y: 500 },
+    { id: 'O', x: 500, y: 480 },
+    { id: 'P', x: 660, y: 470 },
+    { id: 'Q', x: 780, y: 400 },
+    { id: 'R', x: 520, y: 310 },
+    { id: 'C1', x: 600, y: 360 },
+  ],
+  edges: [
+    ['A', 'B'],
+    ['B', 'C'],
+    ['C', 'D'],
+    ['D', 'E'],
+    ['E', 'F'],
+    ['F', 'G'],
+    ['G', 'H'],
+    ['H', 'I'],
+    ['I', 'J'],
+    ['J', 'K'],
+    ['K', 'L'],
+    ['L', 'M'],
+    ['M', 'A'],
+    ['B', 'N'],
+    ['N', 'M'],
+    ['C', 'R'],
+    ['R', 'E'],
+    ['R', 'O'],
+    ['O', 'P'],
+    ['P', 'Q'],
+    ['Q', 'H'],
+    ['N', 'O'],
+    ['O', 'L'],
+    ['P', 'K'],
+    ['F', 'Q'],
+    ['G', 'Q'],
+    ['R', 'C1'],
+    ['C1', 'O'],
+    ['C1', 'P'],
+    ['C1', 'Q'],
+  ],
+};
+
+const DELIVERY_POINTS = [
+  { node: 'E', label: 'Розовый дом', color: '#ffafcc', icon: '🏠' },
+  { node: 'H', label: 'Синий офис', color: '#70d6ff', icon: '🏢' },
+  { node: 'L', label: 'Жёлтая площадь', color: '#ffd166', icon: '🧁' },
+  { node: 'B', label: 'Бирюзовый рынок', color: '#a0e7e5', icon: '🛍️' },
+  { node: 'J', label: 'Солнечный пляж', color: '#ffe066', icon: '🏖️' },
+  { node: 'C', label: 'Лавандовый парк', color: '#cdb4db', icon: '🌸' },
+];
+
+const START_SETS = [
+  ['A', 'M'],
+  ['H', 'J'],
+  ['C', 'E'],
+  ['K', 'G'],
+];
+
+const graph = buildGraph(MAP);
 
 const app = express();
 app.use(express.static(path.join(__dirname, '..')));
@@ -19,62 +92,92 @@ let clientCounter = 1;
 const clients = new Map(); // ws -> { id, roomCode }
 const rooms = new Map(); // code -> room
 
-function createRoomCode() {
-  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 4; i++) {
-    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+function buildGraph(map) {
+  const nodes = new Map();
+  for (const node of map.nodes) {
+    nodes.set(node.id, { ...node, neighbors: new Set() });
   }
-  if (rooms.has(code)) return createRoomCode();
-  return code;
-}
-
-function createMapConfig() {
-  return { width: 6, height: 5, spacing: 140, margin: 110 };
-}
-
-function generateNodes(map) {
-  const nodes = [];
-  const { width, height, spacing, margin } = map;
-  let id = 0;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      nodes.push({
-        id: id++,
-        x: margin + x * spacing,
-        y: margin + y * spacing,
-        neighbors: new Set(),
-      });
-    }
-  }
-  const index = (x, y) => y * width + x;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const node = nodes[index(x, y)];
-      if (x < width - 1) {
-        const right = nodes[index(x + 1, y)];
-        node.neighbors.add(right.id);
-        right.neighbors.add(node.id);
-      }
-      if (y < height - 1) {
-        const down = nodes[index(x, y + 1)];
-        node.neighbors.add(down.id);
-        down.neighbors.add(node.id);
-      }
-    }
+  for (const [a, b] of map.edges) {
+    nodes.get(a).neighbors.add(b);
+    nodes.get(b).neighbors.add(a);
   }
   return nodes;
 }
 
+function shortestPath(start, goal) {
+  if (start === goal) return [start];
+  const queue = [start];
+  const visited = new Set([start]);
+  const prev = new Map();
+  while (queue.length) {
+    const current = queue.shift();
+    if (current === goal) break;
+    for (const neighbor of graph.get(current).neighbors) {
+      if (visited.has(neighbor)) continue;
+      visited.add(neighbor);
+      prev.set(neighbor, current);
+      queue.push(neighbor);
+    }
+  }
+  if (!prev.has(goal) && start !== goal) return null;
+  const path = [];
+  let cur = goal;
+  while (cur !== undefined) {
+    path.unshift(cur);
+    cur = prev.get(cur);
+  }
+  return path;
+}
+
+function randomDestination(exclude) {
+  const options = DELIVERY_POINTS.filter((d) => d.node !== exclude);
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+function createVehicle(player, index, startNode) {
+  const dest = randomDestination(startNode);
+  return {
+    id: `${player.id}-${index + 1}`,
+    ownerId: player.id,
+    order: index + 1,
+    label: `${player.name} ${VEHICLE_EMOJIS[index] || index + 1}`,
+    color: player.color,
+    current: startNode,
+    goal: dest.node,
+    goalInfo: dest,
+    route: [],
+    waiting: 0,
+    pendingStop: 0,
+    stepsTaken: 0,
+    history: [],
+  };
+}
+
 function serializePlayers(players) {
-  return players.map(({ id, name, color, type, position, score, deliveries }) => ({
-    id,
-    name,
-    color,
-    type,
-    position,
-    score,
-    deliveries,
+  return players.map((player) => ({
+    id: player.id,
+    name: player.name,
+    color: player.color,
+    deliveries: player.deliveries,
+    score: player.score,
+  }));
+}
+
+function serializeVehicles(room) {
+  return room.vehicles.map((vehicle) => ({
+    id: vehicle.id,
+    ownerId: vehicle.ownerId,
+    order: vehicle.order,
+    label: vehicle.label,
+    color: vehicle.color,
+    current: vehicle.current,
+    goal: vehicle.goal,
+    goalInfo: vehicle.goalInfo,
+    route: vehicle.route.slice(),
+    waiting: vehicle.waiting,
+    pendingStop: vehicle.pendingStop,
+    stepsTaken: vehicle.stepsTaken,
+    history: vehicle.history.slice(),
   }));
 }
 
@@ -85,255 +188,331 @@ function send(ws, type, payload) {
 }
 
 function broadcast(room, type, payload) {
-  for (const player of room.players) {
-    const client = room.clientSockets.get(player.id);
-    if (client) send(client, type, payload);
+  for (const [id, socket] of room.sockets.entries()) {
+    if (socket.readyState === socket.OPEN) {
+      send(socket, type, payload(id));
+    }
   }
 }
 
-function randomNodeId(room) {
-  const idx = Math.floor(Math.random() * room.mapNodes.length);
-  return room.mapNodes[idx].id;
-}
-
-function createRoom({ hostId, hostSocket, name, maxPlayers }) {
-  const code = createRoomCode();
+function createRoom(socket, name) {
+  const code = generateRoomCode();
   const room = {
     code,
-    hostId,
-    maxPlayers: Math.max(2, Math.min(4, maxPlayers || 4)),
-    players: [],
     state: 'lobby',
-    mapConfig: createMapConfig(),
-    mapNodes: null,
-    passengers: [],
-    turn: 1,
-    currentPlayerIndex: 0,
-    clientSockets: new Map(),
+    players: [],
+    sockets: new Map(),
+    hostId: null,
+    turn: 0,
+    turnLimit: TURN_LIMIT,
+    activePlayerId: null,
+    vehicles: [],
   };
-  room.mapNodes = generateNodes(room.mapConfig);
   rooms.set(code, room);
-  addPlayerToRoom(room, hostId, hostSocket, name, true);
+  const player = addPlayer(room, socket, name, true);
+  clients.set(socket, { id: player.id, roomCode: code });
   return room;
 }
 
-function addPlayerToRoom(room, playerId, socket, name, isHost = false) {
-  if (room.players.length >= room.maxPlayers) {
-    throw new Error('Лобби заполнено');
-  }
-  const color = COLORS[room.players.length % COLORS.length];
-  let position = randomNodeId(room);
-  const taken = new Set(room.players.map((p) => p.position));
-  let attempts = 0;
-  while (taken.has(position) && attempts < 20) {
-    position = randomNodeId(room);
-    attempts++;
-  }
+function addPlayer(room, socket, name, isHost = false) {
+  const id = `p${clientCounter++}`;
+  const color = PLAYER_COLORS[room.players.length % PLAYER_COLORS.length];
   const player = {
-    id: playerId,
-    name,
+    id,
+    name: name || `Игрок ${room.players.length + 1}`,
     color,
-    type: 'remote',
-    position,
-    score: 0,
     deliveries: 0,
-    ready: isHost,
+    score: 0,
   };
   room.players.push(player);
-  room.clientSockets.set(playerId, socket);
+  room.sockets.set(id, socket);
+  if (isHost || !room.hostId) {
+    room.hostId = id;
+  }
+  clients.set(socket, { id, roomCode: room.code });
   return player;
 }
 
-function removePlayer(room, playerId) {
-  const idx = room.players.findIndex((p) => p.id === playerId);
-  if (idx >= 0) {
-    room.players.splice(idx, 1);
-    room.clientSockets.delete(playerId);
+function removePlayer(socket) {
+  const info = clients.get(socket);
+  if (!info) return;
+  const room = rooms.get(info.roomCode);
+  if (!room) {
+    clients.delete(socket);
+    return;
   }
+  const player = playerById(room, info.id);
+  const name = player?.name || 'Игрок';
+  room.players = room.players.filter((p) => p.id !== info.id);
+  room.sockets.delete(info.id);
+  clients.delete(socket);
   if (!room.players.length) {
     rooms.delete(room.code);
+    return;
   }
+  if (room.hostId === info.id) {
+    room.hostId = room.players[0].id;
+  }
+  if (room.state === 'running') {
+    room.state = 'lobby';
+    room.vehicles = [];
+    room.turn = 0;
+    room.activePlayerId = room.hostId;
+  }
+  notifyLobby(room, `${name} отключился.`);
 }
 
-function startRoomGame(room) {
-  if (room.players.length < 2) {
-    throw new Error('Нужно минимум два игрока');
-  }
+function notifyLobby(room, message) {
+  broadcast(room, 'lobby', (id) => ({
+    you: id,
+    code: room.code,
+    players: serializePlayers(room.players),
+    ready: room.players.length >= 2,
+    host: room.hostId,
+    message,
+  }));
+}
+
+function startGame(room) {
   room.state = 'running';
-  room.turn = 1;
-  room.currentPlayerIndex = 0;
-  room.passengers = [];
-  for (const player of room.players) {
-    player.score = 0;
+  room.turn = 0;
+  room.activePlayerId = room.hostId;
+  room.vehicles = [];
+  room.players.forEach((player, index) => {
     player.deliveries = 0;
-    player.position = randomNodeId(room);
-  }
-  const passengerSlots = Math.min(3, room.players.length * 2);
-  for (let i = 0; i < passengerSlots; i++) {
-    spawnPassenger(room);
-  }
-  const payload = {
-    map: room.mapConfig,
+    player.score = 0;
+    const pair = START_SETS[index % START_SETS.length];
+    pair.forEach((startNode, idx) => {
+      const vehicle = createVehicle(player, idx, startNode);
+      room.vehicles.push(vehicle);
+    });
+  });
+  broadcast(room, 'start', (id) => ({
+    you: id,
     players: serializePlayers(room.players),
-    passengers: room.passengers.map((p) => p.nodeId),
+    vehicles: serializeVehicles(room),
     turn: room.turn,
-    maxTurns: TURN_LIMIT,
-    difficulty: 'online',
-  };
-  for (const player of room.players) {
-    const socket = room.clientSockets.get(player.id);
-    if (socket) {
-      send(socket, 'gameStart', { ...payload, you: player.id });
+    turnLimit: room.turnLimit,
+    active: room.activePlayerId,
+    message: `Игра началась! Ходит ${playerById(room, room.activePlayerId)?.name || 'ведущий'}.`,
+  }));
+}
+
+function playerById(room, id) {
+  return room.players.find((p) => p.id === id);
+}
+
+function vehicleById(room, id) {
+  return room.vehicles.find((v) => v.id === id);
+}
+
+function validatePath(vehicle, path) {
+  if (!Array.isArray(path) || path.length < 2) return false;
+  if (path[0] !== vehicle.current) return false;
+  if (path[path.length - 1] !== vehicle.goal) return false;
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const a = path[i];
+    const b = path[i + 1];
+    if (!graph.get(a).neighbors.has(b)) return false;
+  }
+  return true;
+}
+
+function applyRoute(room, payload) {
+  const vehicle = vehicleById(room, payload.vehicle);
+  if (!vehicle) return { ok: false, message: 'Маршрутка не найдена' };
+  if (!validatePath(vehicle, payload.path)) return { ok: false, message: 'Маршрут недействителен' };
+  vehicle.route = payload.path.slice(1);
+  vehicle.history = payload.path.slice();
+  return { ok: true, message: `${vehicle.label} получил новый маршрут.` };
+}
+
+function applyStop(room, payload) {
+  const vehicle = vehicleById(room, payload.vehicle);
+  if (!vehicle) return { ok: false, message: 'Маршрутка не найдена' };
+  const amount = Math.max(1, Math.min(5, Number(payload.amount) || 1));
+  vehicle.pendingStop += amount;
+  return { ok: true, message: `${vehicle.label} задержится на ${amount} ход(ов).` };
+}
+
+function advanceRoom(room) {
+  room.turn += 1;
+  const events = [];
+  for (const vehicle of room.vehicles) {
+    if (vehicle.pendingStop > 0) {
+      vehicle.waiting += vehicle.pendingStop;
+      events.push(`${vehicle.label} запланировал ожидание на ${vehicle.pendingStop} ход(ов).`);
+      vehicle.pendingStop = 0;
+    }
+    if (vehicle.waiting > 0) {
+      vehicle.waiting -= 1;
+      events.push(`${vehicle.label} стоит на узле ${vehicle.current}.`);
+      continue;
+    }
+    if (!vehicle.route.length) {
+      events.push(`${vehicle.label} ждёт новый маршрут.`);
+      continue;
+    }
+    const next = vehicle.route.shift();
+    vehicle.current = next;
+    vehicle.stepsTaken += 1;
+    if (vehicle.current === vehicle.goal) {
+      handleArrival(room, vehicle, events);
     }
   }
-  broadcast(room, 'lobbyUpdate', { players: room.players });
-}
-
-function spawnPassenger(room) {
-  const taken = new Set(room.players.map((p) => p.position));
-  for (const passenger of room.passengers) taken.add(passenger.nodeId);
-  const candidates = room.mapNodes.filter((node) => !taken.has(node.id));
-  if (!candidates.length) return;
-  const node = candidates[Math.floor(Math.random() * candidates.length)];
-  room.passengers.push({ nodeId: node.id, timer: PASSENGER_LIFETIME });
-}
-
-function advanceTurn(room) {
-  room.currentPlayerIndex = (room.currentPlayerIndex + 1) % room.players.length;
-  if (room.currentPlayerIndex === 0) {
-    room.turn += 1;
-    for (const passenger of room.passengers) passenger.timer -= 1;
-    room.passengers = room.passengers.filter((p) => p.timer > 0);
-    if (Math.random() < 0.6) spawnPassenger(room);
-    if (room.turn > TURN_LIMIT) {
-      finishRoom(room);
-    }
+  let finished = false;
+  let winnerMessage = '';
+  if (room.turn >= room.turnLimit) {
+    finished = true;
+    const sorted = [...room.players].sort((a, b) => b.score - a.score);
+    const winner = sorted[0];
+    winnerMessage = winner
+      ? `Партия завершена. Победитель: ${winner.name} (${winner.score} очков).`
+      : 'Партия завершена.';
+  } else {
+    const idx = room.players.findIndex((p) => p.id === room.activePlayerId);
+    room.activePlayerId = room.players[(idx + 1) % room.players.length].id;
   }
+  return { events, finished, winnerMessage };
 }
 
-function finishRoom(room) {
-  room.state = 'finished';
-  const ranking = [...room.players].sort((a, b) => b.score - a.score);
-  broadcast(room, 'stateUpdate', {
-    players: serializePlayers(room.players),
-    passengers: room.passengers.map((p) => p.nodeId),
+function handleArrival(room, vehicle, events) {
+  const owner = playerById(room, vehicle.ownerId);
+  if (!owner) return;
+  owner.deliveries += 1;
+  const gained = Math.max(10, 40 - vehicle.stepsTaken * 2);
+  owner.score += gained;
+  events.push(`${vehicle.label} завершил доставку (${gained} очков).`);
+  vehicle.stepsTaken = 0;
+  const dest = randomDestination(vehicle.goal);
+  vehicle.goal = dest.node;
+  vehicle.goalInfo = dest;
+  vehicle.route = [];
+  vehicle.history = [];
+}
+
+function broadcastState(room, message) {
+  broadcast(room, 'state', (id) => ({
     turn: room.turn,
-    currentPlayerIndex: room.currentPlayerIndex,
-  });
-  broadcast(room, 'gameOver', {
-    winner: ranking[0]?.name || '—',
-  });
+    turnLimit: room.turnLimit,
+    players: serializePlayers(room.players),
+    vehicles: serializeVehicles(room),
+    active: room.activePlayerId,
+    message,
+  }));
+}
+
+function generateRoomCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 4; i += 1) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return rooms.has(code) ? generateRoomCode() : code;
 }
 
 wss.on('connection', (ws) => {
-  const clientId = `c${clientCounter++}`;
-  clients.set(ws, { id: clientId, roomCode: null });
-  send(ws, 'hello', { clientId });
-
-  ws.on('message', (message) => {
+  ws.on('message', (raw) => {
     let data;
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(raw.toString());
     } catch (err) {
       return;
     }
-    const meta = clients.get(ws);
-    if (!meta) return;
-    switch (data.type) {
-      case 'createRoom': {
-        const name = String(data.payload?.name || 'Хост').slice(0, 24);
-        const maxPlayers = Number(data.payload?.maxPlayers || 4);
-        const room = createRoom({ hostId: meta.id, hostSocket: ws, name, maxPlayers });
-        meta.roomCode = room.code;
-        send(ws, 'roomCreated', { code: room.code, players: room.players, isHost: true });
-        break;
-      }
-      case 'joinRoom': {
-        const code = String(data.payload?.code || '').toUpperCase();
-        const name = String(data.payload?.name || 'Игрок').slice(0, 24);
+    if (data.type === 'hello') {
+      const { name, action, room: code } = data.payload || {};
+      if (action === 'create') {
+        const room = createRoom(ws, name);
+        notifyLobby(room, `Лобби ${room.code}. Ждём соперников (2–4 игроков).`);
+      } else if (action === 'join') {
+        if (!code || !rooms.has(code)) {
+          send(ws, 'error', 'Код лобби не найден.');
+          return;
+        }
         const room = rooms.get(code);
-        if (!room) {
-          send(ws, 'error', { message: 'Лобби не найдено' });
+        if (room.players.length >= 4) {
+          send(ws, 'error', 'Лобби уже заполнено.');
           return;
         }
-        if (room.state !== 'lobby') {
-          send(ws, 'error', { message: 'Игра уже идёт' });
-          return;
-        }
-        try {
-          addPlayerToRoom(room, meta.id, ws, name, false);
-          meta.roomCode = room.code;
-          send(ws, 'joined', { code: room.code, players: room.players });
-          broadcast(room, 'lobbyUpdate', { players: room.players });
-        } catch (err) {
-          send(ws, 'error', { message: err.message });
-        }
-        break;
+        const player = addPlayer(room, ws, name, false);
+        notifyLobby(room, `${player.name} подключился. Игроков: ${room.players.length}.`);
       }
-      case 'startGame': {
-        const room = rooms.get(meta.roomCode);
-        if (!room) return;
-        if (room.hostId !== meta.id) {
-          send(ws, 'error', { message: 'Только хост может запустить игру' });
-          return;
+      return;
+    }
+
+    const info = clients.get(ws);
+    if (!info) {
+      send(ws, 'error', 'Сначала выберите режим.');
+      return;
+    }
+    const room = rooms.get(info.roomCode);
+    if (!room) {
+      send(ws, 'error', 'Лобби не найдено.');
+      return;
+    }
+
+    if (data.type === 'update') {
+      const payload = data.payload || {};
+      if (payload.type === 'start') {
+        if (room.state === 'lobby' && room.players.length >= 2 && room.hostId === info.id) {
+          startGame(room);
+        } else {
+          send(ws, 'error', 'Нельзя начать игру.');
         }
-        try {
-          startRoomGame(room);
-        } catch (err) {
-          send(ws, 'error', { message: err.message });
-        }
-        break;
+        return;
       }
-      case 'makeMove': {
-        const room = rooms.get(meta.roomCode);
-        if (!room || room.state !== 'running') return;
-        const playerIndex = room.players.findIndex((p) => p.id === meta.id);
-        if (playerIndex !== room.currentPlayerIndex) {
-          send(ws, 'error', { message: 'Сейчас не ваш ход' });
-          return;
-        }
-        const targetNodeId = Number(data.payload?.targetNodeId);
-        const player = room.players[playerIndex];
-        const currentNode = room.mapNodes[player.position];
-        if (!currentNode.neighbors.has(targetNodeId)) {
-          send(ws, 'error', { message: 'Недопустимый ход' });
-          return;
-        }
-        player.position = targetNodeId;
-        const passengerIndex = room.passengers.findIndex((p) => p.nodeId === targetNodeId);
-        if (passengerIndex >= 0) {
-          player.score += PASSENGER_VALUE;
-          player.deliveries += 1;
-          room.passengers.splice(passengerIndex, 1);
-        }
-        advanceTurn(room);
-        broadcast(room, 'stateUpdate', {
-          players: serializePlayers(room.players),
-          passengers: room.passengers.map((p) => p.nodeId),
-          turn: room.turn,
-          currentPlayerIndex: room.currentPlayerIndex,
-        });
-        break;
+      if (room.state !== 'running') {
+        send(ws, 'error', 'Игра ещё не запущена.');
+        return;
       }
-      default:
-        break;
+      let message = '';
+      switch (payload.type) {
+        case 'setRoute':
+          const routeResult = applyRoute(room, payload);
+          if (!routeResult.ok) {
+            send(ws, 'error', routeResult.message);
+            return;
+          }
+          message = routeResult.message;
+          break;
+        case 'stop':
+          const stopResult = applyStop(room, payload);
+          if (!stopResult.ok) {
+            send(ws, 'error', stopResult.message);
+            return;
+          }
+          message = stopResult.message;
+          break;
+        case 'advance': {
+          if (room.activePlayerId !== info.id) {
+            send(ws, 'error', 'Сейчас ход другого игрока.');
+            return;
+          }
+          const result = advanceRoom(room);
+          message = result.events.length ? result.events.join(' ') : `Ход ${room.turn} завершён.`;
+          if (result.finished) {
+            message = result.winnerMessage || message;
+          }
+          broadcastState(room, message);
+          if (result.finished) {
+            notifyLobby(room, `${message} Нажмите «Следующий ход», чтобы начать новую партию.`);
+            room.state = 'lobby';
+            room.vehicles = [];
+            room.turn = 0;
+            room.activePlayerId = room.hostId;
+          }
+          return;
+        }
+        default:
+          message = '';
+      }
+      broadcastState(room, message);
     }
   });
 
-  ws.on('close', () => {
-    const meta = clients.get(ws);
-    if (!meta) return;
-    if (meta.roomCode) {
-      const room = rooms.get(meta.roomCode);
-      if (room) {
-        removePlayer(room, meta.id);
-        broadcast(room, 'lobbyUpdate', { players: room.players });
-      }
-    }
-    clients.delete(ws);
-  });
+  ws.on('close', () => removePlayer(ws));
 });
 
 server.listen(PORT, () => {
-  console.log(`Маршрутчики сервер запущен на http://localhost:${PORT}`);
+  console.log(`Маршрутчики слушают на http://localhost:${PORT}`);
 });

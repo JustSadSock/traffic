@@ -1,1468 +1,1115 @@
-(() => {
-  const TURN_LIMIT = 30;
-  const PLAYER_VEHICLES = 2;
-  const ONE_WAY_DURATION = 3;
-  const ONE_WAY_COOLDOWN = 5;
-  const ROUTE_BASE_COST = 5;
-  const SIGNAL_BASE_COST = 10;
-  const SIGNAL_COOLDOWN = 3;
-  const SIGNAL_HISTORY_WINDOW = 10;
-  const NPC_SPAWN_RATE = 0.04;
-  const NPC_LOOKAHEAD = 5;
+const TURN_LIMIT = 30;
+const PLAYER_COLORS = ['#ff8ba7', '#70d6ff', '#ffd166', '#6ef2a5'];
+const VEHICLE_EMOJIS = ['①', '②'];
 
-  const SCENARIOS = {
-    weekday: {
-      id: 'weekday',
-      name: 'Будний рассвет',
-      spawnMultiplier: 1,
-      penaltyMultiplier: 1,
-      description: 'Базовые параметры правил v0.2. Отлично, чтобы освоиться.'
-    },
-    market: {
-      id: 'market',
-      name: 'Базарный день',
-      spawnMultiplier: 1.4,
-      penaltyMultiplier: 1.2,
-      description: 'Больше NPC и плотнее пробки — следите за маршрутами.'
-    },
-    night: {
-      id: 'night',
-      name: 'Ночная смена',
-      spawnMultiplier: 0.7,
-      penaltyMultiplier: 1.4,
-      description: 'Меньше трафика, но штрафы ощутимее.'
+const MAP = {
+  width: 1200,
+  height: 780,
+  nodes: [
+    { id: 'A', x: 150, y: 560 },
+    { id: 'B', x: 210, y: 420 },
+    { id: 'C', x: 250, y: 290 },
+    { id: 'D', x: 360, y: 180 },
+    { id: 'E', x: 520, y: 130 },
+    { id: 'F', x: 690, y: 150 },
+    { id: 'G', x: 840, y: 230 },
+    { id: 'H', x: 910, y: 330 },
+    { id: 'I', x: 950, y: 470 },
+    { id: 'J', x: 860, y: 600 },
+    { id: 'K', x: 700, y: 660 },
+    { id: 'L', x: 520, y: 690 },
+    { id: 'M', x: 360, y: 650 },
+    { id: 'N', x: 250, y: 500 },
+    { id: 'O', x: 500, y: 480 },
+    { id: 'P', x: 660, y: 470 },
+    { id: 'Q', x: 780, y: 400 },
+    { id: 'R', x: 520, y: 310 },
+    { id: 'C1', x: 600, y: 360 },
+  ],
+  edges: [
+    ['A', 'B'],
+    ['B', 'C'],
+    ['C', 'D'],
+    ['D', 'E'],
+    ['E', 'F'],
+    ['F', 'G'],
+    ['G', 'H'],
+    ['H', 'I'],
+    ['I', 'J'],
+    ['J', 'K'],
+    ['K', 'L'],
+    ['L', 'M'],
+    ['M', 'A'],
+    ['B', 'N'],
+    ['N', 'M'],
+    ['C', 'R'],
+    ['R', 'E'],
+    ['R', 'O'],
+    ['O', 'P'],
+    ['P', 'Q'],
+    ['Q', 'H'],
+    ['N', 'O'],
+    ['O', 'L'],
+    ['P', 'K'],
+    ['F', 'Q'],
+    ['G', 'Q'],
+    ['R', 'C1'],
+    ['C1', 'O'],
+    ['C1', 'P'],
+    ['C1', 'Q'],
+  ],
+};
+
+const DELIVERY_POINTS = [
+  { node: 'E', label: 'Розовый дом', color: '#ffafcc', icon: '🏠' },
+  { node: 'H', label: 'Синий офис', color: '#70d6ff', icon: '🏢' },
+  { node: 'L', label: 'Жёлтая площадь', color: '#ffd166', icon: '🧁' },
+  { node: 'B', label: 'Бирюзовый рынок', color: '#a0e7e5', icon: '🛍️' },
+  { node: 'J', label: 'Солнечный пляж', color: '#ffe066', icon: '🏖️' },
+  { node: 'C', label: 'Лавандовый парк', color: '#cdb4db', icon: '🌸' },
+];
+
+const START_SETS = [
+  ['A', 'M'],
+  ['H', 'J'],
+  ['C', 'E'],
+  ['K', 'G'],
+];
+
+const graph = buildGraph(MAP);
+
+const elements = {
+  canvas: document.getElementById('gameCanvas'),
+  hint: document.getElementById('hint'),
+  btnAdvance: document.getElementById('btnAdvance'),
+  btnToggleNodes: document.getElementById('btnToggleNodes'),
+  btnRoute: document.getElementById('btnRoute'),
+  btnStop: document.getElementById('btnStop'),
+  btnCancel: document.getElementById('btnCancel'),
+  vehicleList: document.getElementById('vehicleList'),
+  log: document.getElementById('log'),
+  turnLabel: document.getElementById('turnLabel'),
+  activePlayerLabel: document.getElementById('activePlayerLabel'),
+  modeScreen: document.getElementById('modeScreen'),
+  modeExtra: document.getElementById('modeExtra'),
+  btnStart: document.getElementById('btnStart'),
+  routeDialog: document.getElementById('routeDialog'),
+  routePreview: document.getElementById('routePreview'),
+  routeHint: document.getElementById('routeHint'),
+  routeLength: document.getElementById('routeLength'),
+  currentNode: document.getElementById('currentNode'),
+  targetNode: document.getElementById('targetNode'),
+  btnConfirmRoute: document.getElementById('btnConfirmRoute'),
+  btnCloseRoute: document.getElementById('btnCloseRoute'),
+  stopDialog: document.getElementById('stopDialog'),
+  stopAmount: document.getElementById('stopAmount'),
+  stopAmountLabel: document.getElementById('stopAmountLabel'),
+  btnApplyStop: document.getElementById('btnApplyStop'),
+  btnCloseStop: document.getElementById('btnCloseStop'),
+  scorePlayers: document.getElementById('scorePlayers'),
+};
+
+const ctx = elements.canvas.getContext('2d');
+
+const state = {
+  running: false,
+  mode: null,
+  showNodes: false,
+  players: [],
+  vehicles: [],
+  selectedVehicleId: null,
+  turn: 0,
+  turnLimit: TURN_LIMIT,
+  log: [],
+  hint: 'Выберите режим, чтобы начать игру.',
+  plannedRoute: null,
+  editingVehicle: null,
+  localPlayerId: null,
+  online: null,
+  activePlayer: null,
+  roomCode: null,
+};
+
+function buildGraph(map) {
+  const nodes = new Map();
+  for (const node of map.nodes) {
+    nodes.set(node.id, { ...node, neighbors: new Set() });
+  }
+  for (const [a, b] of map.edges) {
+    nodes.get(a).neighbors.add(b);
+    nodes.get(b).neighbors.add(a);
+  }
+  return nodes;
+}
+
+const nodeById = (id) => graph.get(id);
+
+function distance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function shortestPath(start, goal) {
+  if (start === goal) return [start];
+  const queue = [start];
+  const visited = new Set([start]);
+  const prev = new Map();
+  while (queue.length) {
+    const current = queue.shift();
+    if (current === goal) break;
+    for (const next of graph.get(current).neighbors) {
+      if (visited.has(next)) continue;
+      visited.add(next);
+      prev.set(next, current);
+      queue.push(next);
     }
+  }
+  if (!prev.has(goal) && start !== goal) return null;
+  const path = [];
+  let cur = goal;
+  while (cur !== undefined) {
+    path.unshift(cur);
+    cur = prev.get(cur);
+  }
+  return path;
+}
+
+function randomDestination(exclude) {
+  const candidates = DELIVERY_POINTS.filter((d) => d.node !== exclude);
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function createPlayer(id, name, type, color) {
+  return {
+    id,
+    name,
+    type,
+    color,
+    deliveries: 0,
+    score: 0,
   };
+}
 
-  const NODE_DEFS = [
-    { id: 'river', label: 'Набережная', x: 120, y: 210 },
-    { id: 'campus', label: 'Кампус', x: 260, y: 120 },
-    { id: 'museum', label: 'Музей', x: 420, y: 120 },
-    { id: 'hospital', label: 'Больница', x: 560, y: 160 },
-    { id: 'uptown', label: 'Северный', x: 700, y: 220 },
-    { id: 'loop', label: 'Кольцо', x: 780, y: 360, signal: { groups: { A: ['uptown', 'park'], B: ['mall', 'terminal'] } } },
-    { id: 'mall', label: 'Торговый', x: 560, y: 340 },
-    { id: 'center', label: 'Центр', x: 400, y: 300, signal: { groups: { A: ['campus', 'station'], B: ['museum', 'mall'] } } },
-    { id: 'station', label: 'Вокзал', x: 260, y: 360 },
-    { id: 'oldtown', label: 'Старый город', x: 180, y: 500 },
-    { id: 'depot', label: 'Депо', x: 320, y: 560 },
-    { id: 'lake', label: 'Озеро', x: 500, y: 560 },
-    { id: 'park', label: 'Парк', x: 640, y: 540 },
-    { id: 'terminal', label: 'Терминал', x: 800, y: 520 }
-  ];
-
-  const EDGE_DEFS = [
-    ['river', 'campus'],
-    ['campus', 'museum'],
-    ['museum', 'hospital'],
-    ['hospital', 'uptown'],
-    ['uptown', 'loop'],
-    ['loop', 'mall'],
-    ['mall', 'center'],
-    ['center', 'campus'],
-    ['center', 'station'],
-    ['station', 'river'],
-    ['station', 'oldtown'],
-    ['oldtown', 'depot'],
-    ['depot', 'lake'],
-    ['lake', 'park'],
-    ['park', 'terminal'],
-    ['mall', 'lake'],
-    ['station', 'depot'],
-    ['museum', 'center'],
-    ['hospital', 'mall'],
-    ['oldtown', 'lake']
-  ];
-
-  const COLORS = {
-    background: '#fdfdfd',
-    road: '#d9d5ff',
-    roadHighlight: '#b8b4f4',
-    node: '#ffffff',
-    nodeBorder: '#aea6d0',
-    signalA: '#65d6ad',
-    signalB: '#f6a7d8',
-    player: ['#ff728c', '#7b8bff'],
-    npc: '#636b86',
-    destination: '#ffd166',
-    route: '#ff9dbb',
-    routeShadow: 'rgba(255, 157, 187, 0.25)',
-    oneWay: '#6b49ff'
+function createVehicle(player, index, startNode) {
+  const dest = randomDestination(startNode);
+  return {
+    id: `${player.id}-${index + 1}`,
+    label: `${player.name} ${VEHICLE_EMOJIS[index] || index + 1}`,
+    ownerId: player.id,
+    order: index + 1,
+    color: player.color,
+    current: startNode,
+    goal: dest.node,
+    goalInfo: dest,
+    route: [],
+    waiting: 0,
+    pendingStop: 0,
+    stepsTaken: 0,
+    history: [],
   };
+}
 
-  const dom = {};
-  const state = {
-    scenario: SCENARIOS.weekday,
-    turn: 0,
-    limit: TURN_LIMIT,
-    balance: 0,
-    income: 0,
-    penalties: 0,
-    completedRoutes: 0,
-    graph: null,
-    vehicles: [],
-    npcs: [],
-    pendingActions: {
-      routeEdits: [],
-      signalSwitches: [],
-      oneWays: []
-    },
-    oneWays: new Map(),
-    selection: null,
-    uiMode: 'idle',
-    hoverNode: null,
-    routeEditor: null,
-    spawnPool: 0,
-    logs: [],
-    npcPreview: null
-  };
+function startSoloGame() {
+  resetState();
+  const human = createPlayer('player', 'Вы', 'human', PLAYER_COLORS[0]);
+  const ai = createPlayer('ai', 'Автопилот', 'ai', PLAYER_COLORS[1]);
+  state.players = [human, ai];
+  state.localPlayerId = human.id;
+  state.activePlayer = human.id;
+  assignVehicles();
+  autoPlanForAI();
+  selectDefaultVehicle(human.id);
+  setHint('Выберите машину и запланируйте маршрут до цели.');
+  state.mode = 'solo';
+  state.running = true;
+  elements.btnAdvance.disabled = false;
+  updateUI();
+}
 
-  function init() {
-    cacheDom();
-    bindUI();
-    state.graph = buildGraph();
-    initOneWayState();
-    resizeCanvas();
-    requestAnimationFrame(draw);
-  }
+function startLocalGame(names) {
+  resetState();
+  state.players = names.map((name, idx) =>
+    createPlayer(`p${idx + 1}`, name || `Игрок ${idx + 1}`, 'human', PLAYER_COLORS[idx % PLAYER_COLORS.length])
+  );
+  state.localPlayerId = state.players[0].id;
+  state.activePlayer = null;
+  assignVehicles();
+  selectDefaultVehicle(state.localPlayerId);
+  setHint('Каждый игрок строит маршруты для своих машин. Соревнуйтесь за доставку!');
+  state.mode = 'local';
+  state.running = true;
+  elements.btnAdvance.disabled = false;
+  updateUI();
+}
 
-  function cacheDom() {
-    dom.canvas = document.getElementById('gameCanvas');
-    dom.ctx = dom.canvas.getContext('2d');
-    dom.turnValue = document.getElementById('turnValue');
-    dom.turnLimit = document.getElementById('turnLimit');
-    dom.turnsRemaining = document.getElementById('turnsRemaining');
-    dom.balanceValue = document.getElementById('balanceValue');
-    dom.incomeValue = document.getElementById('incomeValue');
-    dom.penaltyValue = document.getElementById('penaltyValue');
-    dom.routeSummary = document.getElementById('routeSummary');
-    dom.vehicleList = document.getElementById('vehicleList');
-    dom.actionQueue = document.getElementById('actionQueue');
-    dom.log = document.getElementById('log');
-    dom.boardHint = document.getElementById('boardHint');
-    dom.statusMessage = document.getElementById('statusMessage');
-    dom.btnEndTurn = document.getElementById('btnEndTurn');
-    dom.btnPlanRoute = document.getElementById('btnPlanRoute');
-    dom.btnSetWait = document.getElementById('btnSetWait');
-    dom.btnSignal = document.getElementById('btnSignal');
-    dom.btnOneWay = document.getElementById('btnOneWay');
-    dom.btnCancelMode = document.getElementById('btnCancelMode');
-    dom.startScreen = document.getElementById('startScreen');
-    dom.routeEditor = document.getElementById('routeEditor');
-    dom.routeTitle = document.getElementById('routeTitle');
-    dom.routeSubtitle = document.getElementById('routeSubtitle');
-    dom.routeList = document.getElementById('routeList');
-    dom.routeDestination = document.getElementById('routeDestination');
-    dom.routeLength = document.getElementById('routeLength');
-    dom.routeCost = document.getElementById('routeCost');
-    dom.btnConfirmRoute = document.getElementById('btnConfirmRoute');
-    dom.btnCloseRoute = document.getElementById('btnCloseRoute');
-    dom.helpOverlay = document.getElementById('helpOverlay');
-    dom.btnShowHelp = document.getElementById('btnShowHelp');
-    dom.btnCloseHelp = document.getElementById('btnCloseHelp');
-    dom.paletteSelect = document.getElementById('paletteSelect');
-    dom.btnStartGame = document.getElementById('btnStartGame');
-    dom.startCards = Array.from(document.querySelectorAll('.scenario-card'));
-  }
+function startOnlineGame(config) {
+  resetState();
+  state.mode = 'online';
+  const { name, action, room } = config;
+  const socket = new WebSocket(`ws://${location.hostname}:3000`);
+  state.online = { socket, action, roomCode: room, name };
+  state.roomCode = room;
+  state.activePlayer = null;
+  setHint('Соединяемся с сервером...');
+  socket.addEventListener('open', () => {
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        payload: { name, action, room },
+      })
+    );
+  });
+  socket.addEventListener('message', handleOnlineMessage);
+  socket.addEventListener('close', () => {
+    logEvent('Соединение закрыто.');
+    setHint('Соединение потеряно.');
+    state.running = false;
+    elements.btnAdvance.disabled = true;
+  });
+}
 
-  function bindUI() {
-    window.addEventListener('resize', resizeCanvas);
-    dom.btnEndTurn.addEventListener('click', advanceTurn);
-    dom.canvas.addEventListener('click', handleCanvasClick);
-    dom.canvas.addEventListener('mousemove', handleCanvasHover);
-    dom.btnPlanRoute.addEventListener('click', () => openRouteEditor(false));
-    dom.btnSetWait.addEventListener('click', () => openRouteEditor(true));
-    dom.btnSignal.addEventListener('click', enterSignalMode);
-    dom.btnOneWay.addEventListener('click', enterOneWayMode);
-    dom.btnCancelMode.addEventListener('click', resetInteractionMode);
-    dom.btnCloseRoute.addEventListener('click', closeRouteEditor);
-    dom.btnConfirmRoute.addEventListener('click', confirmRoutePlan);
-    dom.btnShowHelp.addEventListener('click', () => toggleHelp(true));
-    dom.btnCloseHelp.addEventListener('click', () => toggleHelp(false));
-    dom.paletteSelect.addEventListener('change', handlePaletteChange);
-    dom.btnStartGame.addEventListener('click', startGame);
-    dom.startCards.forEach((card) => {
-      card.addEventListener('click', () => selectScenario(card.dataset.scenario));
-    });
-  }
+function resetState() {
+  state.running = false;
+  state.players = [];
+  state.vehicles = [];
+  state.selectedVehicleId = null;
+  state.turn = 0;
+  state.log = [];
+  state.hint = '';
+  state.plannedRoute = null;
+  state.editingVehicle = null;
+  state.localPlayerId = null;
+  state.online = null;
+  state.activePlayer = null;
+  state.showNodes = false;
+  state.roomCode = null;
+  elements.log.innerHTML = '';
+  elements.btnToggleNodes.textContent = 'Показать узлы';
+  updateHint();
+}
 
-  function handlePaletteChange() {
-    const theme = dom.paletteSelect.value;
-    document.body.setAttribute('data-theme', theme);
-    document.getElementById('app').setAttribute('data-theme', theme);
-  }
-
-  function selectScenario(id) {
-    const scenario = SCENARIOS[id];
-    if (!scenario) return;
-    state.scenario = scenario;
-    dom.startCards.forEach((card) => {
-      card.classList.toggle('active', card.dataset.scenario === id);
-    });
-    dom.btnStartGame.disabled = false;
-  }
-
-  function startGame() {
-    dom.startScreen.classList.add('hidden');
-    resetGameState();
-    updateUI();
-    logEvent('Смена начата. Планируйте маршруты и держите город в движении.');
-  }
-
-  function resetGameState() {
-    state.turn = 0;
-    state.limit = TURN_LIMIT;
-    state.balance = 0;
-    state.income = 0;
-    state.penalties = 0;
-    state.completedRoutes = 0;
-    state.vehicles = [];
-    state.npcs = [];
-    state.pendingActions = { routeEdits: [], signalSwitches: [], oneWays: [] };
-    state.logs = [];
-    state.selection = null;
-    state.uiMode = 'idle';
-    state.spawnPool = 0;
-    state.npcPreview = null;
-    initOneWayState();
-    dom.btnPlanRoute.disabled = true;
-    dom.btnSetWait.disabled = true;
-    dom.btnCancelMode.disabled = true;
-    setStatus('Выберите маршрутку, чтобы спланировать первый рейс.');
-    hideHint();
-    for (let i = 0; i < PLAYER_VEHICLES; i += 1) {
-      const startNode = i === 0 ? 'depot' : 'station';
-      const vehicle = createPlayerVehicle(i, startNode);
+function assignVehicles() {
+  state.vehicles = [];
+  state.players.forEach((player, idx) => {
+    const pair = START_SETS[idx % START_SETS.length];
+    pair.forEach((startNode, vehicleIdx) => {
+      const vehicle = createVehicle(player, vehicleIdx, startNode);
       state.vehicles.push(vehicle);
-      assignNewDestination(vehicle);
+    });
+  });
+}
+
+function autoPlanForAI() {
+  for (const vehicle of state.vehicles) {
+    const owner = state.players.find((p) => p.id === vehicle.ownerId);
+    if (owner?.type === 'ai') {
+      planShortestRoute(vehicle);
     }
-    resizeCanvas();
   }
+}
 
-  function createPlayerVehicle(index, nodeId) {
-    return {
-      id: `player-${index + 1}`,
-      type: 'player',
-      name: `Маршрутка ${index + 1}`,
-      color: COLORS.player[index % COLORS.player.length],
-      node: nodeId,
-      routeSegments: [{ node: nodeId, wait: 0 }],
-      routeIndex: 0,
-      waitRemaining: 0,
-      routePaidLength: 0,
-      pendingRoute: null,
-      pendingPaidLength: 0,
-      destination: null,
-      stats: {
-        distance: 0,
-        turns: 0,
-        blocking: 0,
-        blockingThisTurn: 0,
-        clean: true
-      }
-    };
+function planShortestRoute(vehicle) {
+  const path = shortestPath(vehicle.current, vehicle.goal);
+  if (path && path.length > 1) {
+    vehicle.route = path.slice(1);
   }
+}
 
-  function createNPC(id, nodeId) {
-    return {
-      id,
-      type: 'npc',
-      node: nodeId,
-      color: COLORS.npc,
-      path: [nodeId],
-      pathIndex: 0,
-      waitRemaining: 0,
-      destination: null,
-      eta: 0
-    };
+function setHint(text) {
+  const message = text && text.length ? text : defaultHint();
+  state.hint = message;
+  updateHint();
+}
+
+function defaultHint() {
+  if (!state.running) return 'Выберите режим, чтобы начать новую партию.';
+  if (state.mode === 'solo') return 'Выберите свою маршрутку и постройте путь до цели.';
+  if (state.mode === 'local') return 'Игроки по очереди планируют маршруты и нажимают «Следующий ход».';
+  if (state.mode === 'online') return 'Ждите свою очередь и обновления лобби.';
+  return '';
+}
+
+function updateHint() {
+  elements.hint.textContent = state.hint;
+}
+
+function updateTurnLabel() {
+  elements.turnLabel.textContent = `${state.turn} / ${state.turnLimit}`;
+}
+
+function logEvent(text) {
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.textContent = text;
+  elements.log.prepend(entry);
+  while (elements.log.children.length > 40) {
+    elements.log.removeChild(elements.log.lastChild);
   }
+}
 
-  function buildGraph() {
-    const nodes = new Map();
-    NODE_DEFS.forEach((def) => {
-      nodes.set(def.id, {
-        ...def,
-        neighbors: new Set(),
-        signal: def.signal
-          ? {
-              phase: 'A',
-              timer: 0,
-              groups: {
-                A: new Set(def.signal.groups.A),
-                B: new Set(def.signal.groups.B)
-              },
-              cooldown: 0,
-              history: []
-            }
-          : null
-      });
-    });
-    const edges = [];
-    EDGE_DEFS.forEach(([a, b], index) => {
-      const id = `edge-${index}`;
-      nodes.get(a).neighbors.add(b);
-      nodes.get(b).neighbors.add(a);
-      edges.push({ id, a, b });
-    });
-    const adjacency = buildAdjacency(nodes, edges);
-    return { nodes, edges, adjacency };
+function updateUI() {
+  updateTurnLabel();
+  renderVehicleList();
+  renderScores();
+  updateHint();
+  updateActionButtons();
+  updateActivePlayerLabel();
+}
+
+function updateActivePlayerLabel() {
+  let text = 'Режим ожидания';
+  if (!state.running) {
+    elements.activePlayerLabel.textContent = text;
+    return;
   }
-
-  function buildAdjacency(nodes, edges) {
-    const adjacency = new Map();
-    nodes.forEach((_, id) => {
-      adjacency.set(id, []);
-    });
-    edges.forEach((edge) => {
-      const { a, b } = edge;
-      const abPhase = getSignalPhaseRequirement(nodes.get(b), a);
-      const baPhase = getSignalPhaseRequirement(nodes.get(a), b);
-      adjacency.get(a).push({ to: b, edge, phase: abPhase });
-      adjacency.get(b).push({ to: a, edge, phase: baPhase });
-    });
-    return adjacency;
-  }
-
-  function getSignalPhaseRequirement(node, fromId) {
-    if (!node.signal) return null;
-    if (node.signal.groups.A.has(fromId)) return 'A';
-    if (node.signal.groups.B.has(fromId)) return 'B';
-    return null;
-  }
-
-  function initOneWayState() {
-    state.oneWays = new Map();
-    state.graph.edges.forEach((edge) => {
-      const key = edgeKey(edge.a, edge.b);
-      state.oneWays.set(key, {
-        edge,
-        active: false,
-        allowed: null,
-        remaining: 0,
-        cooldown: 0
-      });
-    });
-  }
-
-  function edgeKey(a, b) {
-    return a < b ? `${a}|${b}` : `${b}|${a}`;
-  }
-
-  function resizeCanvas() {
-    const rect = dom.canvas.parentElement.getBoundingClientRect();
-    const size = Math.min(rect.width, rect.height);
-    const ratio = window.devicePixelRatio || 1;
-    dom.canvas.width = size * ratio;
-    dom.canvas.height = size * ratio;
-    dom.canvas.style.width = `${size}px`;
-    dom.canvas.style.height = `${size}px`;
-    dom.ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    draw();
-  }
-
-  function draw() {
-    const ctx = dom.ctx;
-    if (!ctx || !state.graph) return;
-    const { width, height } = dom.canvas;
-    ctx.clearRect(0, 0, width, height);
-    drawEdges(ctx);
-    drawOneWays(ctx);
-    drawRoutes(ctx);
-    drawNpcPreview(ctx);
-    drawNodes(ctx);
-    drawVehicles(ctx);
-    drawDestinations(ctx);
-    if (state.uiMode === 'signal') {
-      highlightSignalTargets(ctx);
+  if (state.mode === 'solo') {
+    text = 'Вы против автопилота';
+  } else if (state.mode === 'local') {
+    const count = state.players.length;
+    const suffix = count === 1 ? 'игрок' : count >= 2 && count <= 4 ? 'игрока' : 'игроков';
+    text = `Играют ${count} ${suffix}`;
+  } else if (state.mode === 'online') {
+    if (state.activePlayer) {
+      const player = state.players.find((p) => p.id === state.activePlayer);
+      text = player ? `Ходит: ${player.name}` : 'Ожидание хода';
+    } else {
+      text = 'Ожидаем игроков';
     }
-    if (state.uiMode === 'oneway-to' && state.routeEditor?.fromNode) {
-      highlightOneWayTargets(ctx);
+  }
+  elements.activePlayerLabel.textContent = text;
+}
+
+function renderScores() {
+  const container = elements.scorePlayers;
+  container.innerHTML = '';
+  state.players.forEach((player) => {
+    const card = document.createElement('div');
+    card.className = 'score';
+    card.style.borderTop = `4px solid ${player.color}`;
+    card.innerHTML = `
+      <span class="label">${player.name}</span>
+      <strong>${player.deliveries} доставок</strong>
+      <span class="cash">${player.score} очков</span>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function renderVehicleList() {
+  elements.vehicleList.innerHTML = '';
+  const localPlayers = new Set();
+  if (state.mode === 'solo') {
+    localPlayers.add(state.localPlayerId);
+  } else if (state.mode === 'local') {
+    state.players.forEach((p) => localPlayers.add(p.id));
+  } else if (state.mode === 'online' && state.localPlayerId) {
+    localPlayers.add(state.localPlayerId);
+  }
+
+  for (const vehicle of state.vehicles) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'vehicle-card';
+    if (vehicle.id === state.selectedVehicleId) {
+      card.classList.add('active');
     }
-    requestAnimationFrame(draw);
-  }
-
-  function project(node) {
-    const padding = 60;
-    const size = Math.min(dom.canvas.width, dom.canvas.height) / (window.devicePixelRatio || 1);
-    const scaleX = (size - padding * 2) / 700;
-    const scaleY = (size - padding * 2) / 460;
-    return {
-      x: padding + (node.x - 100) * scaleX,
-      y: padding + (node.y - 120) * scaleY
-    };
-  }
-
-  function drawEdges(ctx) {
-    ctx.lineWidth = 6;
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = COLORS.road;
-    state.graph.edges.forEach((edge) => {
-      const a = project(state.graph.nodes.get(edge.a));
-      const b = project(state.graph.nodes.get(edge.b));
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
+    const owner = state.players.find((p) => p.id === vehicle.ownerId);
+    const avatar = document.createElement('div');
+    avatar.className = 'vehicle-avatar';
+    avatar.style.background = owner?.color || '#ccc';
+    avatar.textContent = VEHICLE_EMOJIS[(vehicle.order - 1) % VEHICLE_EMOJIS.length] || vehicle.order;
+    const info = document.createElement('div');
+    info.className = 'vehicle-info';
+    info.innerHTML = `
+      <strong>${owner?.name || 'Игрок'} — №${vehicle.order}</strong>
+      <span>Точка: ${vehicle.goalInfo?.label || vehicle.goal}</span>
+    `;
+    const status = document.createElement('div');
+    status.className = 'vehicle-status';
+    status.textContent = vehicle.waiting > 0 ? `Ждёт ${vehicle.waiting}` : vehicle.route.length ? `${vehicle.route.length} узлов` : 'Ожидает';
+    card.append(avatar, info, status);
+    const selectable = owner?.type !== 'ai' || state.mode !== 'solo';
+    card.disabled = !localPlayers.has(vehicle.ownerId) || !selectable;
+    card.addEventListener('click', () => {
+      state.selectedVehicleId = vehicle.id;
+      updateActionButtons();
+      renderVehicleList();
+      highlightVehicle(vehicle);
     });
+    elements.vehicleList.appendChild(card);
   }
+}
 
-  function drawOneWays(ctx) {
-    state.oneWays.forEach((status) => {
-      if (!status.active || !status.allowed) return;
-      const [from, to] = status.allowed.split('>');
-      const start = project(state.graph.nodes.get(from));
-      const end = project(state.graph.nodes.get(to));
-      const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
-      const angle = Math.atan2(end.y - start.y, end.x - start.x);
-      const arrowLength = 24;
-      const arrowWidth = 10;
-      ctx.strokeStyle = COLORS.oneWay;
-      ctx.fillStyle = COLORS.oneWay;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(start.x, start.y);
-      ctx.lineTo(end.x, end.y);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(mid.x, mid.y);
-      ctx.lineTo(mid.x - arrowLength * Math.cos(angle) + arrowWidth * Math.sin(angle), mid.y - arrowLength * Math.sin(angle) - arrowWidth * Math.cos(angle));
-      ctx.lineTo(mid.x - arrowLength * Math.cos(angle) - arrowWidth * Math.sin(angle), mid.y - arrowLength * Math.sin(angle) + arrowWidth * Math.cos(angle));
-      ctx.closePath();
-      ctx.fill();
+function selectDefaultVehicle(ownerId) {
+  if (!ownerId) return;
+  const candidate = state.vehicles.find((v) => v.ownerId === ownerId);
+  if (candidate) {
+    state.selectedVehicleId = candidate.id;
+  }
+}
+
+function highlightVehicle(vehicle) {
+  const target = vehicle.goalInfo?.label || vehicle.goal;
+  setHint(`Маршрутка №${vehicle.order}. Цель: ${target}.`);
+}
+
+function updateActionButtons() {
+  const vehicle = getSelectedVehicle();
+  const canControl = vehicle && canControlVehicle(vehicle);
+  elements.btnRoute.disabled = !canControl;
+  elements.btnStop.disabled = !canControl;
+  elements.btnCancel.disabled = !state.editingVehicle && !state.plannedRoute;
+}
+
+function canControlVehicle(vehicle) {
+  if (!vehicle) return false;
+  const owner = state.players.find((p) => p.id === vehicle.ownerId);
+  if (!owner) return false;
+  if (state.mode === 'solo') {
+    return owner.type === 'human';
+  }
+  if (state.mode === 'local') {
+    return true;
+  }
+  if (state.mode === 'online') {
+    return owner.id === state.localPlayerId;
+  }
+  return false;
+}
+
+function getSelectedVehicle() {
+  return state.vehicles.find((v) => v.id === state.selectedVehicleId) || null;
+}
+
+function advanceTurn() {
+  if (state.mode === 'online') {
+    const kind = state.running ? 'advance' : 'start';
+    sendOnlineUpdate({ type: kind });
+    elements.btnAdvance.disabled = true;
+    return;
+  }
+  if (!state.running) return;
+  state.turn += 1;
+  for (const vehicle of state.vehicles) {
+    processVehicleTurn(vehicle);
+  }
+  if (state.mode === 'solo') {
+    autoPlanForAI();
+  }
+  logEndOfTurn();
+  updateUI();
+  checkEndGame();
+}
+
+elements.btnAdvance.addEventListener('click', advanceTurn);
+
+elements.btnToggleNodes.addEventListener('click', () => {
+  state.showNodes = !state.showNodes;
+  elements.btnToggleNodes.textContent = state.showNodes ? 'Скрыть узлы' : 'Показать узлы';
+});
+
+elements.btnRoute.addEventListener('click', () => {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle) return;
+  openRouteDialog(vehicle);
+});
+
+elements.btnStop.addEventListener('click', () => {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle) return;
+  openStopDialog(vehicle);
+});
+
+elements.btnCancel.addEventListener('click', () => {
+  closeRouteDialog();
+  closeStopDialog();
+  state.plannedRoute = null;
+  state.editingVehicle = null;
+  updateActionButtons();
+});
+
+elements.btnCloseRoute.addEventListener('click', () => {
+  closeRouteDialog();
+});
+
+elements.btnConfirmRoute.addEventListener('click', () => {
+  if (!state.plannedRoute || !state.editingVehicle) return;
+  applyRoute();
+});
+
+elements.btnCloseStop.addEventListener('click', () => {
+  closeStopDialog();
+});
+
+elements.btnApplyStop.addEventListener('click', () => {
+  applyStop();
+});
+
+elements.stopAmount.addEventListener('input', () => {
+  elements.stopAmountLabel.textContent = elements.stopAmount.value;
+});
+
+setupModeSelection();
+setupCanvasInteractions();
+renderLoop();
+updateUI();
+
+function openRouteDialog(vehicle) {
+  state.plannedRoute = [vehicle.current];
+  state.editingVehicle = vehicle;
+  elements.currentNode.textContent = vehicle.current;
+  elements.targetNode.textContent = vehicle.goal;
+  elements.routePreview.innerHTML = '';
+  elements.routeLength.textContent = '0';
+  elements.btnConfirmRoute.disabled = true;
+  elements.routeDialog.classList.remove('hidden');
+  setHint('Отметьте узлы на карте. Для отмены узла нажмите по нему в списке.');
+}
+
+function closeRouteDialog() {
+  elements.routeDialog.classList.add('hidden');
+  state.plannedRoute = null;
+  state.editingVehicle = null;
+  updateActionButtons();
+  setHint('');
+}
+
+function openStopDialog(vehicle) {
+  state.editingVehicle = vehicle;
+  elements.stopAmount.value = '1';
+  elements.stopAmountLabel.textContent = '1';
+  elements.stopDialog.classList.remove('hidden');
+  setHint(`Маршрутка №${vehicle.order}: задержка на узле.`);
+}
+
+function closeStopDialog() {
+  elements.stopDialog.classList.add('hidden');
+  state.editingVehicle = null;
+  updateActionButtons();
+}
+
+function applyRoute() {
+  const vehicle = state.editingVehicle;
+  if (!vehicle) return;
+  const selected = state.plannedRoute;
+  if (state.mode === 'online') {
+    sendOnlineUpdate({ type: 'setRoute', vehicle: vehicle.id, path: selected });
+  } else {
+    vehicle.route = selected.slice(1);
+    vehicle.history = selected.slice();
+    logEvent(`${vehicle.label} меняет маршрут: ${selected.join(' → ')}.`);
+  }
+  closeRouteDialog();
+  updateUI();
+}
+
+function applyStop() {
+  const vehicle = state.editingVehicle;
+  if (!vehicle) return;
+  const amount = Number(elements.stopAmount.value) || 1;
+  if (state.mode === 'online') {
+    sendOnlineUpdate({ type: 'stop', vehicle: vehicle.id, amount });
+  } else {
+    vehicle.pendingStop += amount;
+    logEvent(`${vehicle.label} получит стоп на ${amount} ход(ов).`);
+  }
+  closeStopDialog();
+}
+
+function processVehicleTurn(vehicle) {
+  if (vehicle.pendingStop > 0) {
+    vehicle.waiting += vehicle.pendingStop;
+    logEvent(`${vehicle.label} готовится стоять ${vehicle.pendingStop} ход(ов).`);
+    vehicle.pendingStop = 0;
+  }
+  if (vehicle.waiting > 0) {
+    vehicle.waiting -= 1;
+    logEvent(`${vehicle.label} ожидает на узле ${vehicle.current}.`);
+    return;
+  }
+  if (!vehicle.route.length) {
+    logEvent(`${vehicle.label} без маршрута.`);
+    return;
+  }
+  const next = vehicle.route.shift();
+  vehicle.current = next;
+  vehicle.stepsTaken += 1;
+  logEvent(`${vehicle.label} движется к узлу ${next}.`);
+  if (vehicle.current === vehicle.goal) {
+    handleArrival(vehicle);
+  }
+}
+
+function handleArrival(vehicle) {
+  const owner = state.players.find((p) => p.id === vehicle.ownerId);
+  if (!owner) return;
+  owner.deliveries += 1;
+  const gained = Math.max(10, 40 - vehicle.stepsTaken * 2);
+  owner.score += gained;
+  logEvent(`${vehicle.label} достиг цели ${vehicle.goalInfo?.label || vehicle.goal} и заработал ${gained} очков!`);
+  vehicle.stepsTaken = 0;
+  const nextDest = randomDestination(vehicle.goal);
+  vehicle.goal = nextDest.node;
+  vehicle.goalInfo = nextDest;
+  vehicle.route = [];
+  vehicle.history = [];
+  if (owner.type === 'ai' && state.mode === 'solo') {
+    planShortestRoute(vehicle);
+  } else if (state.mode === 'online') {
+    sendOnlineUpdate({ type: 'routeComplete', vehicle: vehicle.id, score: owner.score, deliveries: owner.deliveries });
+  }
+}
+
+function logEndOfTurn() {
+  logEvent(`— Ход ${state.turn} завершён —`);
+}
+
+function checkEndGame() {
+  if (state.turn >= state.turnLimit) {
+    state.running = false;
+    elements.btnAdvance.disabled = true;
+    const winner = [...state.players].sort((a, b) => b.score - a.score)[0];
+    setHint(`Партия завершена. Победитель: ${winner.name} (${winner.score} очков).`);
+    logEvent(`Игра закончена. Победил ${winner.name}.`);
+    if (state.mode === 'online') {
+      sendOnlineUpdate({ type: 'gameOver' });
+    }
+  }
+}
+
+function setupCanvasInteractions() {
+  elements.canvas.addEventListener('click', (event) => {
+    const rect = elements.canvas.getBoundingClientRect();
+    const scaleX = elements.canvas.width / rect.width;
+    const scaleY = elements.canvas.height / rect.height;
+    const x = (event.clientX - rect.left) * scaleX;
+    const y = (event.clientY - rect.top) * scaleY;
+    const nearest = findNearestNode(x, y, 32);
+    if (!nearest) return;
+    if (state.routeDialog.classList.contains('hidden')) {
+      selectVehicleFromMap(nearest.id);
+    } else {
+      extendRoute(nearest.id);
+    }
+  });
+}
+
+function findNearestNode(x, y, radius) {
+  let best = null;
+  let bestDist = radius;
+  for (const node of MAP.nodes) {
+    const d = distance({ x, y }, node);
+    if (d <= bestDist) {
+      best = node;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+function selectVehicleFromMap(nodeId) {
+  const controllable = state.vehicles.filter((v) => canControlVehicle(v));
+  const located = controllable.find((v) => v.current === nodeId);
+  if (located) {
+    state.selectedVehicleId = located.id;
+    renderVehicleList();
+    updateActionButtons();
+    highlightVehicle(located);
+  }
+}
+
+function extendRoute(nodeId) {
+  if (!state.plannedRoute) return;
+  const vehicle = state.editingVehicle;
+  const last = state.plannedRoute[state.plannedRoute.length - 1];
+  if (!graph.get(last).neighbors.has(nodeId)) {
+    setHint('Между узлами нет дороги.');
+    return;
+  }
+  if (state.plannedRoute.includes(nodeId) && nodeId !== vehicle.goal) {
+    setHint('Маршрут не может зацикливаться, кроме цели.');
+    return;
+  }
+  state.plannedRoute.push(nodeId);
+  refreshRoutePreview();
+  if (nodeId === vehicle.goal) {
+    setHint('Маршрут готов. Нажмите «Применить».');
+    elements.btnConfirmRoute.disabled = false;
+  } else {
+    setHint('Добавьте узлы до цели.');
+  }
+}
+
+function refreshRoutePreview() {
+  elements.routePreview.innerHTML = '';
+  state.plannedRoute.forEach((nodeId, idx) => {
+    const item = document.createElement('li');
+    item.textContent = nodeId;
+    item.addEventListener('click', () => {
+      if (idx === 0) return;
+      state.plannedRoute = state.plannedRoute.slice(0, idx + 1);
+      refreshRoutePreview();
+      elements.routeLength.textContent = String(state.plannedRoute.length - 1);
+      elements.btnConfirmRoute.disabled = state.plannedRoute[state.plannedRoute.length - 1] !== state.editingVehicle.goal;
     });
-  }
+    elements.routePreview.appendChild(item);
+  });
+  elements.routeLength.textContent = String(state.plannedRoute.length - 1);
+}
 
-  function drawRoutes(ctx) {
-    state.vehicles.forEach((vehicle) => {
-      if (!vehicle.routeSegments || vehicle.routeSegments.length <= 1) return;
-      ctx.strokeStyle = vehicle.color || COLORS.route;
-      ctx.lineWidth = 3;
-      ctx.setLineDash([8, 8]);
-      ctx.beginPath();
-      vehicle.routeSegments.forEach((segment, index) => {
-        const point = project(state.graph.nodes.get(segment.node));
-        if (index === 0) {
-          ctx.moveTo(point.x, point.y);
-        } else {
-          ctx.lineTo(point.x, point.y);
-        }
-      });
-      ctx.stroke();
-      ctx.setLineDash([]);
-    });
-  }
+function renderLoop() {
+  drawScene();
+  requestAnimationFrame(renderLoop);
+}
 
-  function drawNpcPreview(ctx) {
-    if (!state.npcPreview || !state.npcPreview.path || state.npcPreview.path.length < 2) return;
-    ctx.strokeStyle = 'rgba(99, 107, 134, 0.45)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 6]);
+function drawScene() {
+  ctx.clearRect(0, 0, MAP.width, MAP.height);
+  drawBackground();
+  drawRoads();
+  drawDestinations();
+  drawVehicleRoutes();
+  drawVehicles();
+  if (state.showNodes || !state.running || !state.mode) {
+    drawNodes();
+  }
+}
+
+function drawBackground() {
+  ctx.save();
+  ctx.fillStyle = '#bde0fe';
+  ctx.fillRect(0, 0, MAP.width, MAP.height);
+  ctx.fillStyle = '#d9f1ff';
+  ctx.beginPath();
+  ctx.moveTo(60, 80);
+  ctx.bezierCurveTo(400, -40, 800, 40, 1120, 120);
+  ctx.lineTo(1120, 720);
+  ctx.bezierCurveTo(780, 760, 300, 700, 80, 680);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawRoads() {
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const [a, b] of MAP.edges) {
+    const na = nodeById(a);
+    const nb = nodeById(b);
+    ctx.strokeStyle = 'rgba(38, 68, 86, 0.08)';
+    ctx.lineWidth = 32;
     ctx.beginPath();
-    state.npcPreview.path.forEach((nodeId, index) => {
-      const point = project(state.graph.nodes.get(nodeId));
-      if (index === 0) {
-        ctx.moveTo(point.x, point.y);
-      } else {
-        ctx.lineTo(point.x, point.y);
-      }
-    });
+    ctx.moveTo(na.x, na.y);
+    ctx.lineTo(nb.x, nb.y);
     ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  function drawNodes(ctx) {
-    state.graph.nodes.forEach((node) => {
-      const { x, y } = project(node);
-      ctx.fillStyle = COLORS.node;
-      ctx.strokeStyle = COLORS.nodeBorder;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(x, y, 14, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      if (node.signal) {
-        ctx.fillStyle = node.signal.phase === 'A' ? COLORS.signalA : COLORS.signalB;
-        ctx.beginPath();
-        ctx.arc(x, y, 8, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.fillStyle = '#55586f';
-      ctx.font = '12px "Inter", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(node.label, x, y - 18);
-    });
-  }
-
-  function drawVehicles(ctx) {
-    const all = [...state.npcs, ...state.vehicles];
-    all.forEach((entity) => {
-      const node = state.graph.nodes.get(entity.node);
-      if (!node) return;
-      const { x, y } = project(node);
-      if (entity.id.startsWith('player')) {
-        ctx.fillStyle = entity.color;
-        drawRoundedRect(ctx, x - 12, y - 12, 24, 24, 8);
-        ctx.fill();
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 12px "Inter"';
-        ctx.textAlign = 'center';
-        ctx.fillText(entity.id.endsWith('1') ? '1' : '2', x, y + 4);
-      } else {
-        ctx.fillStyle = COLORS.npc;
-        ctx.beginPath();
-        ctx.arc(x, y, 8, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    });
-  }
-
-
-  function drawRoundedRect(ctx, x, y, width, height, radius) {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.lineWidth = 26;
     ctx.beginPath();
-    ctx.moveTo(x + radius, y);
-    ctx.lineTo(x + width - radius, y);
-    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-    ctx.lineTo(x + width, y + height - radius);
-    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-    ctx.lineTo(x + radius, y + height);
-    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-    ctx.lineTo(x, y + radius);
-    ctx.quadraticCurveTo(x, y, x + radius, y);
-    ctx.closePath();
+    ctx.moveTo(na.x, na.y);
+    ctx.lineTo(nb.x, nb.y);
+    ctx.stroke();
   }
+  ctx.restore();
+}
 
-  function drawDestinations(ctx) {
-    state.vehicles.forEach((vehicle) => {
-      if (!vehicle.destination) return;
-      const node = state.graph.nodes.get(vehicle.destination);
-      if (!node) return;
-      const { x, y } = project(node);
-      ctx.fillStyle = COLORS.destination;
-      ctx.beginPath();
-      ctx.arc(x, y, 10, 0, Math.PI * 2);
-      ctx.fill();
-    });
+function drawDestinations() {
+  for (const dest of DELIVERY_POINTS) {
+    const node = nodeById(dest.node);
+    ctx.save();
+    ctx.translate(node.x, node.y);
+    ctx.fillStyle = dest.color;
+    ctx.strokeStyle = 'rgba(38, 68, 86, 0.15)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(-20, -20, 40, 40, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Nunito';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(dest.icon, 0, 2);
+    ctx.restore();
   }
+}
 
-  function highlightSignalTargets(ctx) {
-    state.graph.nodes.forEach((node) => {
-      if (!node.signal) return;
-      const { x, y } = project(node);
-      ctx.strokeStyle = COLORS.signalA;
+function drawVehicleRoutes() {
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const vehicle of state.vehicles) {
+    if (!vehicle.route.length) continue;
+    const owner = state.players.find((p) => p.id === vehicle.ownerId);
+    if (!owner) continue;
+    ctx.strokeStyle = `${owner.color}cc`;
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    const start = nodeById(vehicle.current);
+    ctx.moveTo(start.x, start.y);
+    let prev = start;
+    for (const nodeId of vehicle.route) {
+      const node = nodeById(nodeId);
+      ctx.lineTo(node.x, node.y);
+      prev = node;
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawVehicles() {
+  for (const vehicle of state.vehicles) {
+    const node = nodeById(vehicle.current);
+    ctx.save();
+    ctx.translate(node.x, node.y);
+    ctx.shadowColor = 'rgba(0,0,0,0.18)';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = vehicle.color;
+    ctx.beginPath();
+    ctx.roundRect(-22, -22, 44, 44, 14);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(-8, -4, 6, 0, Math.PI * 2);
+    ctx.arc(8, -4, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#264456';
+    ctx.beginPath();
+    ctx.arc(-8, -4, 3, 0, Math.PI * 2);
+    ctx.arc(8, -4, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px Nunito';
+   ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(vehicle.order), 0, 16);
+    if (vehicle.id === state.selectedVehicleId) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
       ctx.lineWidth = 3;
-      ctx.setLineDash([4, 6]);
       ctx.beginPath();
-      ctx.arc(x, y, 22, 0, Math.PI * 2);
+      ctx.roundRect(-26, -26, 52, 52, 18);
       ctx.stroke();
-      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  }
+}
+
+function drawNodes() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(38, 68, 86, 0.7)';
+  ctx.font = '14px Nunito';
+  ctx.textAlign = 'center';
+  for (const node of MAP.nodes) {
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.strokeStyle = 'rgba(38, 68, 86, 0.25)';
+    ctx.lineWidth = 2;
+    ctx.arc(node.x, node.y, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(38, 68, 86, 0.75)';
+    ctx.fillText(node.id, node.x, node.y - 16);
+  }
+  ctx.restore();
+}
+
+function setupModeSelection() {
+  const modeCards = Array.from(document.querySelectorAll('.mode-card'));
+  let selectedMode = null;
+  let localNames = ['Игрок 1', 'Игрок 2'];
+  const ensureStartState = () => {
+    if (!selectedMode) {
+      elements.btnStart.disabled = true;
+      return;
+    }
+    if (selectedMode === 'local') {
+      const inputs = Array.from(elements.modeExtra.querySelectorAll('input[type="text"]'));
+      const ready = inputs.every((input) => input.value.trim().length > 0);
+      elements.btnStart.disabled = !ready;
+      if (ready) {
+        localNames = inputs.map((input) => input.value.trim());
+      }
+      return;
+    }
+    if (selectedMode === 'online') {
+      const nameInput = elements.modeExtra.querySelector('input[name="playerName"]');
+      const roomInput = elements.modeExtra.querySelector('input[name="roomCode"]');
+      const action = elements.modeExtra.querySelector('select[name="action"]');
+      const ready = nameInput.value.trim().length > 0 && action.value !== 'join' ? true : roomInput.value.trim().length === 4;
+      elements.btnStart.disabled = !ready;
+      return;
+    }
+    elements.btnStart.disabled = false;
+  };
+
+  const renderLocalForm = (count = 2) => {
+    elements.modeExtra.classList.add('visible');
+    elements.modeExtra.innerHTML = '';
+    const label = document.createElement('label');
+    label.textContent = 'Количество игроков';
+    const selector = document.createElement('input');
+    selector.type = 'range';
+    selector.min = '2';
+    selector.max = '4';
+    selector.step = '1';
+    selector.value = String(count);
+    const counter = document.createElement('div');
+    counter.textContent = `${count} игрока`;
+    selector.addEventListener('input', () => {
+      const value = Number(selector.value);
+      counter.textContent = value === 4 ? '4 игрока' : `${value} игрока`;
+      renderLocalForm(value);
     });
-  }
+    elements.modeExtra.append(label, selector, counter);
+    for (let i = 0; i < count; i++) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = `Имя игрока ${i + 1}`;
+      input.value = localNames[i] || '';
+      input.addEventListener('input', ensureStartState);
+      elements.modeExtra.appendChild(input);
+    }
+    ensureStartState();
+  };
 
-  function highlightOneWayTargets(ctx) {
-    const from = state.routeEditor.fromNode;
-    if (!from) return;
-    const neighbors = state.graph.adjacency.get(from);
-    neighbors.forEach((neighbor) => {
-      const node = state.graph.nodes.get(neighbor.to);
-      const { x, y } = project(node);
-      ctx.strokeStyle = COLORS.oneWay;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([4, 6]);
-      ctx.beginPath();
-      ctx.arc(x, y, 22, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    });
-  }
-
-  function handleCanvasClick(event) {
-    if (!state.graph) return;
-    const point = getCanvasCoordinates(event);
-    const node = findNodeAt(point.x, point.y);
-    const entity = findEntityAt(node?.id);
-    if (state.uiMode === 'signal') {
-      if (node && node.signal) {
-        scheduleSignalSwitch(node.id);
-      }
-      return;
-    }
-    if (state.uiMode === 'oneway-from') {
-      if (node) {
-        state.routeEditor = { fromNode: node.id };
-        state.uiMode = 'oneway-to';
-        setStatus(`Выберите узел, на который будет направлен односторонний знак из «${node.label}».`);
-      }
-      return;
-    }
-    if (state.uiMode === 'oneway-to') {
-      if (node && state.routeEditor?.fromNode) {
-        attemptOneWay(state.routeEditor.fromNode, node.id);
-      }
-      return;
-    }
-    if (state.uiMode === 'route-edit' || state.uiMode === 'wait-edit') {
-      if (node) {
-        updateRouteEditorPath(node.id);
-      }
-      return;
-    }
-    if (entity) {
-      if (entity.type === 'npc') {
-        showNpcForecast(entity);
-      } else {
-        selectVehicle(entity.id);
-      }
-      return;
-    }
-    if (node && node.signal) {
-      setStatus(`Перекрёсток «${node.label}» — фаза ${node.signal.phase}.`);
-    }
-  }
-
-  function handleCanvasHover(event) {
-    if (!state.graph) return;
-    if (!['signal', 'oneway-from', 'oneway-to'].includes(state.uiMode)) return;
-    const point = getCanvasCoordinates(event);
-    const node = findNodeAt(point.x, point.y);
-    if (!node) {
-      hideHint();
-      return;
-    }
-    if (state.uiMode === 'signal' && node.signal) {
-      showHint(`Переключить «${node.label}»`);
-    } else if (state.uiMode === 'oneway-from') {
-      showHint(`Исходный узел: «${node.label}»`);
-    } else if (state.uiMode === 'oneway-to' && state.routeEditor?.fromNode) {
-      const neighbors = state.graph.adjacency.get(state.routeEditor.fromNode);
-      if (neighbors.some((n) => n.to === node.id)) {
-        showHint(`Цель: «${node.label}»`);
-      } else {
-        showHint('Узел не соединён ребром');
-      }
-    }
-  }
-
-  function getCanvasCoordinates(event) {
-    const rect = dom.canvas.getBoundingClientRect();
-    return {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top
+  const renderOnlineForm = () => {
+    elements.modeExtra.classList.add('visible');
+    elements.modeExtra.innerHTML = '';
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.name = 'playerName';
+    name.placeholder = 'Ваше имя';
+    const action = document.createElement('select');
+    action.name = 'action';
+    action.innerHTML = `
+      <option value="create">Создать лобби</option>
+      <option value="join">Войти по коду</option>
+    `;
+    const room = document.createElement('input');
+    room.type = 'text';
+    room.name = 'roomCode';
+    room.placeholder = 'Код (например, XRAY)';
+    room.maxLength = 4;
+    room.style.textTransform = 'uppercase';
+    elements.modeExtra.append(name, action, room);
+    elements.btnStart.textContent = 'Подключиться';
+    const handleChange = () => {
+      room.disabled = action.value === 'create';
+      ensureStartState();
     };
-  }
+    name.addEventListener('input', ensureStartState);
+    room.addEventListener('input', ensureStartState);
+    action.addEventListener('change', handleChange);
+    handleChange();
+  };
 
-  function findNodeAt(x, y) {
-    const threshold = 24;
-    let closest = null;
-    let distance = threshold;
-    state.graph.nodes.forEach((node) => {
-      const projected = project(node);
-      const dx = projected.x - x;
-      const dy = projected.y - y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < distance) {
-        distance = dist;
-        closest = node;
+  modeCards.forEach((card) => {
+    card.addEventListener('click', () => {
+      modeCards.forEach((other) => other.classList.remove('selected'));
+      card.classList.add('selected');
+      selectedMode = card.dataset.mode;
+      elements.modeExtra.classList.remove('visible');
+      elements.modeExtra.innerHTML = '';
+      elements.btnStart.textContent = 'Старт';
+      if (selectedMode === 'local') {
+        renderLocalForm();
+      } else if (selectedMode === 'online') {
+        renderOnlineForm();
       }
+      ensureStartState();
     });
-    return closest;
-  }
+  });
 
-  function findEntityAt(nodeId) {
-    if (!nodeId) return null;
-    return state.vehicles.find((vehicle) => vehicle.node === nodeId) || state.npcs.find((npc) => npc.node === nodeId);
-  }
-
-  function selectVehicle(id) {
-    state.npcPreview = null;
-    const vehicle = state.vehicles.find((v) => v.id === id);
-    if (!vehicle) return;
-    state.selection = { type: 'vehicle', id };
-    dom.btnPlanRoute.disabled = false;
-    dom.btnSetWait.disabled = vehicle.routeSegments.length <= 1;
-    updateVehicleList();
-    setStatus(`Выбрана ${vehicle.name}. Цель: ${formatDestination(vehicle)}.`);
-  }
-
-  function formatDestination(vehicle) {
-    if (!vehicle.destination) return '—';
-    const node = state.graph.nodes.get(vehicle.destination);
-    return node ? node.label : vehicle.destination;
-  }
-
-  function openRouteEditor(waitOnly) {
-    if (!state.selection || state.selection.type !== 'vehicle') return;
-    const vehicle = state.vehicles.find((v) => v.id === state.selection.id);
-    if (!vehicle) return;
-    const title = waitOnly ? 'Ожидание на маршруте' : `Маршрут для ${vehicle.name}`;
-    dom.routeTitle.textContent = title;
-    dom.routeSubtitle.textContent = waitOnly
-      ? 'Измените задержку на узлах маршрута. Правки вступят в силу в начале следующего хода.'
-      : 'Кликните по узлам на карте, чтобы построить путь. Правки вступят в силу в начале следующего хода.';
-    dom.routeDestination.textContent = formatDestination(vehicle);
-    dom.routeEditor.classList.remove('hidden');
-    state.uiMode = waitOnly ? 'wait-edit' : 'route-edit';
-    dom.btnCancelMode.disabled = false;
-    const path = waitOnly ? vehicle.routeSegments.map((segment) => ({ node: segment.node, wait: segment.wait })) : [{ node: vehicle.routeSegments[0].node, wait: 0 }];
-    state.routeEditor = {
-      vehicleId: vehicle.id,
-      path,
-      waitOnly,
-      cost: 0
-    };
-    renderRouteEditor();
-    setStatus(waitOnly ? 'Настраивайте ожидание в правой части окна.' : 'Добавьте узлы маршрута кликами по карте.');
-  }
-
-  function updateRouteEditorPath(nodeId) {
-    if (!state.routeEditor) return;
-    const { path, waitOnly } = state.routeEditor;
-    const last = path[path.length - 1];
-    if (waitOnly) {
-      return;
+  elements.btnStart.addEventListener('click', () => {
+    if (!selectedMode) return;
+    elements.modeScreen.classList.add('hidden');
+    if (selectedMode === 'solo') {
+      startSoloGame();
+    } else if (selectedMode === 'local') {
+      const inputs = Array.from(elements.modeExtra.querySelectorAll('input[type="text"]'));
+      const names = inputs.map((input) => input.value.trim());
+      startLocalGame(names);
+    } else if (selectedMode === 'online') {
+      const nameInput = elements.modeExtra.querySelector('input[name="playerName"]');
+      const roomInput = elements.modeExtra.querySelector('input[name="roomCode"]');
+      const action = elements.modeExtra.querySelector('select[name="action"]');
+      startOnlineGame({ name: nameInput.value.trim(), room: roomInput.value.trim().toUpperCase(), action: action.value });
     }
-    const neighbors = state.graph.adjacency.get(last.node);
-    const isNeighbor = neighbors.some((n) => n.to === nodeId);
-    if (!isNeighbor) {
-      setStatus('Узел не соединён с предыдущим. Выберите соседний перекрёсток.');
-      return;
-    }
-    if (path.length > 1 && path[path.length - 2].node === nodeId) {
-      setStatus('Нельзя двигаться назад сразу. Попробуйте другой путь.');
-      return;
-    }
-    path.push({ node: nodeId, wait: 0 });
-    renderRouteEditor();
+  });
+}
+
+function setupOnlineGame(payload) {
+  state.running = true;
+  state.turnLimit = payload.turnLimit || TURN_LIMIT;
+  state.turn = payload.turn || 0;
+  state.players = payload.players;
+  state.localPlayerId = payload.you;
+  state.vehicles = payload.vehicles;
+  state.activePlayer = payload.active || null;
+  elements.btnAdvance.disabled = payload.active !== payload.you;
+  state.selectedVehicleId = null;
+  selectDefaultVehicle(state.localPlayerId);
+  setHint(payload.message || 'Подождите свой ход.');
+  updateUI();
+}
+
+function handleOnlineMessage(event) {
+  const data = JSON.parse(event.data);
+  switch (data.type) {
+    case 'lobby':
+      if (data.payload.you) state.localPlayerId = data.payload.you;
+      if (Array.isArray(data.payload.players)) state.players = data.payload.players;
+      if (data.payload.code) state.roomCode = data.payload.code;
+      state.activePlayer = data.payload.host || null;
+      state.running = false;
+      setHint(data.payload.message);
+      elements.btnAdvance.disabled = !(data.payload.ready && data.payload.host === state.localPlayerId);
+      if (data.payload.message) logEvent(data.payload.message);
+      updateUI();
+      break;
+    case 'start':
+      setupOnlineGame(data.payload);
+      elements.modeScreen.classList.add('hidden');
+      break;
+    case 'state':
+      state.turn = data.payload.turn;
+      state.players = data.payload.players;
+      state.vehicles = data.payload.vehicles;
+      state.activePlayer = data.payload.active || null;
+      state.turnLimit = data.payload.turnLimit || state.turnLimit;
+      state.running = true;
+      elements.btnAdvance.disabled = data.payload.active !== state.localPlayerId;
+      setHint(data.payload.message);
+      if (data.payload.message) logEvent(data.payload.message);
+      updateUI();
+      break;
+    case 'error':
+      logEvent(`Ошибка: ${data.payload}`);
+      break;
   }
+}
 
-  function renderRouteEditor() {
-    const editor = state.routeEditor;
-    if (!editor) return;
-    const vehicle = state.vehicles.find((v) => v.id === editor.vehicleId);
-    if (!vehicle) return;
-    dom.routeList.innerHTML = '';
-    editor.path.forEach((segment, index) => {
-      const node = state.graph.nodes.get(segment.node);
-      const item = document.createElement('div');
-      item.className = 'route-node';
-      const title = document.createElement('span');
-      title.textContent = `${index + 1}. ${node ? node.label : segment.node}`;
-      item.appendChild(title);
-      if (index > 0) {
-        const waitInput = document.createElement('input');
-        waitInput.type = 'number';
-        waitInput.min = '0';
-        waitInput.max = '3';
-        waitInput.value = segment.wait;
-        waitInput.addEventListener('change', () => {
-          const value = clamp(parseInt(waitInput.value, 10) || 0, 0, 3);
-          segment.wait = value;
-          waitInput.value = value;
-        });
-        const label = document.createElement('label');
-        label.textContent = 'Ожидание';
-        label.style.marginRight = '8px';
-        const container = document.createElement('span');
-        container.appendChild(label);
-        container.appendChild(waitInput);
-        item.appendChild(container);
-      }
-      dom.routeList.appendChild(item);
-    });
-    const edgesCount = Math.max(0, editor.path.length - 1);
-    dom.routeLength.textContent = edgesCount;
-    const paidLength = Math.max(vehicle.routePaidLength, 0);
-    const diff = Math.max(0, edgesCount - paidLength);
-    const cost = editor.waitOnly ? 0 : ROUTE_BASE_COST + diff;
-    editor.cost = cost;
-    dom.routeCost.textContent = `${cost}₵`;
-    dom.btnConfirmRoute.disabled = editor.path.length <= 1 && !editor.waitOnly;
+function sendOnlineUpdate(payload) {
+  if (!state.online?.socket || state.online.socket.readyState !== WebSocket.OPEN) return;
+  state.online.socket.send(JSON.stringify({ type: 'update', payload }));
+}
+
+function renderModeOverlay(message) {
+  if (!state.running) {
+    elements.modeScreen.classList.remove('hidden');
+    setHint(message);
   }
+}
 
-  function closeRouteEditor() {
-    dom.routeEditor.classList.add('hidden');
-    state.routeEditor = null;
-    if (state.uiMode === 'route-edit' || state.uiMode === 'wait-edit') {
-      state.uiMode = 'idle';
-    }
-  }
-
-  function confirmRoutePlan() {
-    const editor = state.routeEditor;
-    if (!editor) return;
-    const vehicle = state.vehicles.find((v) => v.id === editor.vehicleId);
-    if (!vehicle) return;
-    if (!editor.waitOnly && editor.path.length <= 1) {
-      setStatus('Добавьте хотя бы один узел маршрута.');
-      return;
-    }
-    if (!editor.waitOnly) {
-      if (state.balance < editor.cost) {
-        logEvent(`Недостаточно средств: требуется ${editor.cost}₵.`);
-      }
-      state.balance -= editor.cost;
-    }
-    const segments = editor.waitOnly ? editor.path : editor.path.map((segment) => ({ node: segment.node, wait: segment.wait }));
-    const newLength = Math.max(0, segments.length - 1);
-    const newPaidLength = editor.waitOnly ? vehicle.routePaidLength : Math.max(vehicle.routePaidLength, newLength);
-    state.pendingActions.routeEdits.push({
-      vehicleId: vehicle.id,
-      segments,
-      paidLength: newPaidLength
-    });
-    logEvent(`${vehicle.name}: правки маршрута применятся в начале следующего хода.`);
-    closeRouteEditor();
-    resetInteractionMode();
-    updateActionQueue();
-    updateUI();
-  }
-
-  function enterSignalMode() {
-    resetInteractionMode();
-    state.uiMode = 'signal';
-    dom.btnCancelMode.disabled = false;
-    state.npcPreview = null;
-    setStatus('Кликните по перекрёстку со светофором, чтобы запланировать переключение (10₵ + надбавка за частые вмешательства).');
-    showHint('Выберите светофор');
-  }
-
-  function enterOneWayMode() {
-    resetInteractionMode();
-    state.uiMode = 'oneway-from';
-    dom.btnCancelMode.disabled = false;
-    state.routeEditor = { fromNode: null };
-    state.npcPreview = null;
-    setStatus('Выберите первый узел ребра, на котором хотите ввести временный односторонний знак (15₵).');
-    showHint('Кликните исходный узел');
-  }
-
-  function attemptOneWay(fromId, toId) {
-    const neighbors = state.graph.adjacency.get(fromId);
-    const isNeighbor = neighbors.some((n) => n.to === toId);
-    if (!isNeighbor) {
-      setStatus('Узлы не соединены ребром. Выберите соседний узел.');
-      return;
-    }
-    const key = edgeKey(fromId, toId);
-    const status = state.oneWays.get(key);
-    if (!status) {
-      setStatus('Для этого ребра недоступен знак.');
-      return;
-    }
-    if (status.active || status.cooldown > 0) {
-      setStatus('Это ребро сейчас под защитой кулдауна. Попробуйте позже.');
-      return;
-    }
-    state.balance -= 15;
-    state.pendingActions.oneWays.push({ key, allowed: `${fromId}>${toId}` });
-    logEvent(`Назначен временный односторонний знак: ${labelForNode(fromId)} → ${labelForNode(toId)}.`);
-    resetInteractionMode();
-    updateActionQueue();
-    updateUI();
-  }
-
-  function scheduleSignalSwitch(nodeId) {
-    const node = state.graph.nodes.get(nodeId);
-    if (!node?.signal) return;
-    if (node.signal.cooldown > 0) {
-      setStatus(`«${node.label}» в кулдауне ещё ${node.signal.cooldown} ход(а).`);
-      return;
-    }
-    const recent = node.signal.history.filter((turn) => state.turn - turn < SIGNAL_HISTORY_WINDOW).length;
-    const cost = SIGNAL_BASE_COST + 10 * recent;
-    state.balance -= cost;
-    state.pendingActions.signalSwitches.push({ nodeId });
-    logEvent(`Переключение светофора на «${node.label}» вступит в силу в начале следующего хода (стоимость ${cost}₵).`);
-    resetInteractionMode();
-    updateActionQueue();
-    updateUI();
-  }
-
-  function resetInteractionMode() {
-    if (state.uiMode === 'route-edit' || state.uiMode === 'wait-edit') {
-      closeRouteEditor();
-    }
-    state.uiMode = 'idle';
-    dom.btnCancelMode.disabled = true;
-    state.routeEditor = null;
-    state.npcPreview = null;
-    hideHint();
-    setStatus('Режим ожидания: выберите маршрутку или действие.');
-  }
-
-  function setStatus(message) {
-    dom.statusMessage.textContent = message;
-  }
-
-  function showHint(message) {
-    dom.boardHint.textContent = message;
-    dom.boardHint.classList.add('visible');
-  }
-
-  function hideHint() {
-    dom.boardHint.classList.remove('visible');
-  }
-
-  function advanceTurn() {
-    if (state.turn >= state.limit) {
-      logEvent('Смена завершена.');
-      return;
-    }
-    state.npcPreview = null;
-    applyPendingActions();
-    tickSignals();
-    tickOneWays();
-    spawnNPCs();
-    moveEntities();
-    handleEconomy();
-    state.turn += 1;
-    state.vehicles.forEach((vehicle) => {
-      vehicle.stats.turns += 1;
-    });
-    if (state.turn >= state.limit) {
-      logEvent(`Смена завершена. Итоговый баланс: ${state.balance}₵.`);
-    }
-    updateUI();
-  }
-
-  function applyPendingActions() {
-    state.pendingActions.routeEdits.forEach((action) => {
-      const vehicle = state.vehicles.find((v) => v.id === action.vehicleId);
-      if (!vehicle) return;
-      vehicle.routeSegments = action.segments.map((segment) => ({ node: segment.node, wait: segment.wait }));
-      vehicle.routeIndex = 0;
-      vehicle.waitRemaining = vehicle.routeSegments[0]?.wait || 0;
-      vehicle.pendingRoute = null;
-      vehicle.routePaidLength = action.paidLength;
-    });
-    state.pendingActions.routeEdits = [];
-
-    state.pendingActions.signalSwitches.forEach((action) => {
-      const node = state.graph.nodes.get(action.nodeId);
-      if (!node?.signal) return;
-      node.signal.phase = node.signal.phase === 'A' ? 'B' : 'A';
-      node.signal.timer = 0;
-      node.signal.cooldown = SIGNAL_COOLDOWN;
-      node.signal.history.push(state.turn);
-      logEvent(`Светофор на «${node.label}» переключился на фазу ${node.signal.phase}.`);
-    });
-    state.pendingActions.signalSwitches = [];
-
-    state.pendingActions.oneWays.forEach((action) => {
-      const status = state.oneWays.get(action.key);
-      if (!status) return;
-      status.active = true;
-      status.allowed = action.allowed;
-      status.remaining = ONE_WAY_DURATION;
-      status.cooldown = ONE_WAY_COOLDOWN;
-      logEvent(`Одностороннее движение активно: ${labelForNode(action.allowed.split('>')[0])} → ${labelForNode(action.allowed.split('>')[1])}.`);
-    });
-    state.pendingActions.oneWays = [];
-  }
-
-  function tickSignals() {
-    state.graph.nodes.forEach((node) => {
-      if (!node.signal) return;
-      if (node.signal.cooldown > 0) {
-        node.signal.cooldown -= 1;
-      }
-      node.signal.timer += 1;
-      if (node.signal.timer >= 3) {
-        node.signal.phase = node.signal.phase === 'A' ? 'B' : 'A';
-        node.signal.timer = 0;
-      }
-      while (node.signal.history.length && state.turn - node.signal.history[0] >= SIGNAL_HISTORY_WINDOW) {
-        node.signal.history.shift();
-      }
-    });
-  }
-
-  function tickOneWays() {
-    state.oneWays.forEach((status) => {
-      if (status.active) {
-        status.remaining -= 1;
-        if (status.remaining <= 0) {
-          status.active = false;
-          status.allowed = null;
-        }
-      } else if (status.cooldown > 0) {
-        status.cooldown -= 1;
-      }
-    });
-  }
-
-  function spawnNPCs() {
-    const maxNPCs = Math.floor(state.graph.nodes.size / 2);
-    if (state.npcs.length >= maxNPCs) return;
-    state.spawnPool += NPC_SPAWN_RATE * state.graph.nodes.size * state.scenario.spawnMultiplier;
-    const spawnCount = Math.floor(state.spawnPool);
-    state.spawnPool -= spawnCount;
-    for (let i = 0; i < spawnCount; i += 1) {
-      if (state.npcs.length >= maxNPCs) break;
-      const freeNodes = Array.from(state.graph.nodes.values()).filter((node) => !isNodeOccupied(node.id));
-      if (freeNodes.length === 0) break;
-      const startNode = freeNodes[Math.floor(Math.random() * freeNodes.length)];
-      const npc = createNPC(`npc-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`, startNode.id);
-      assignNpcDestination(npc);
-      state.npcs.push(npc);
-      logEvent(`NPC появился на узле «${startNode.label}».`);
-    }
-  }
-
-  function isNodeOccupied(nodeId) {
-    const occupiedPlayer = state.vehicles.some((vehicle) => vehicle.node === nodeId);
-    const occupiedNPC = state.npcs.some((npc) => npc.node === nodeId);
-    return occupiedPlayer || occupiedNPC;
-  }
-
-  function assignNpcDestination(npc) {
-    const distances = breadthFirstDistances(npc.node);
-    const candidates = Array.from(distances.entries())
-      .filter(([nodeId, distance]) => distance >= 3 && distance <= 12 && nodeId !== npc.node)
-      .map(([nodeId]) => nodeId);
-    const options = shuffled(candidates);
-    for (const target of options) {
-      const path = findNpcPath(npc.node, target);
-      if (path && path.length > 1) {
-        npc.destination = target;
-        npc.path = path;
-        npc.pathIndex = 0;
-        npc.eta = path.length - 1;
-        return;
-      }
-    }
-    npc.destination = null;
-    npc.path = [npc.node];
-    npc.pathIndex = 0;
-    npc.eta = 0;
-  }
-
-  function assignNewDestination(vehicle) {
-    const target = randomNodeAtDistance(vehicle.node, 6, 18);
-    if (!target) return;
-    vehicle.destination = target;
-    vehicle.stats.distance = 0;
-    vehicle.stats.turns = 0;
-    vehicle.stats.blocking = 0;
-    vehicle.stats.clean = true;
-    vehicle.routeSegments = [{ node: vehicle.node, wait: 0 }];
-    vehicle.routeIndex = 0;
-    vehicle.waitRemaining = 0;
-    vehicle.routePaidLength = 0;
-    vehicle.pendingRoute = null;
-    logEvent(`${vehicle.name}: новая цель — «${labelForNode(target)}».`);
-  }
-
-  function randomNodeAtDistance(fromId, min, max) {
-    const distances = breadthFirstDistances(fromId);
-    const candidates = Array.from(distances.entries())
-      .filter(([nodeId, distance]) => distance >= min && distance <= max && nodeId !== fromId)
-      .map(([nodeId]) => nodeId);
-    if (candidates.length === 0) return null;
-    return candidates[Math.floor(Math.random() * candidates.length)];
-  }
-
-  function breadthFirstDistances(startId) {
-    const distances = new Map();
-    const queue = [[startId, 0]];
-    distances.set(startId, 0);
-    while (queue.length) {
-      const [nodeId, distance] = queue.shift();
-      state.graph.adjacency.get(nodeId).forEach((neighbor) => {
-        if (!distances.has(neighbor.to)) {
-          distances.set(neighbor.to, distance + 1);
-          queue.push([neighbor.to, distance + 1]);
-        }
-      });
-    }
-    return distances;
-  }
-
-  function findShortestPath(startId, targetId) {
-    const queue = [startId];
-    const visited = new Set([startId]);
-    const prev = new Map();
-    while (queue.length) {
-      const current = queue.shift();
-      if (current === targetId) break;
-      state.graph.adjacency.get(current).forEach((neighbor) => {
-        if (!visited.has(neighbor.to)) {
-          visited.add(neighbor.to);
-          prev.set(neighbor.to, current);
-          queue.push(neighbor.to);
-        }
-      });
-    }
-    if (!visited.has(targetId)) return null;
-    const path = [];
-    let node = targetId;
-    while (node) {
-      path.unshift(node);
-      node = prev.get(node);
-    }
-    return path;
-  }
-
-  function findNpcPath(startId, targetId) {
-    const queue = [startId];
-    const visited = new Set([startId]);
-    const prev = new Map();
-    while (queue.length) {
-      const current = queue.shift();
-      if (current === targetId) break;
-      state.graph.adjacency.get(current).forEach((neighbor) => {
-        if (!visited.has(neighbor.to) && canNpcUseEdge(current, neighbor.to)) {
-          visited.add(neighbor.to);
-          prev.set(neighbor.to, current);
-          queue.push(neighbor.to);
-        }
-      });
-    }
-    if (!visited.has(targetId)) return null;
-    const path = [];
-    let node = targetId;
-    while (node) {
-      path.unshift(node);
-      node = prev.get(node);
-    }
-    return path;
-  }
-
-  function moveEntities() {
-    const occupancy = new Map();
-    state.vehicles.forEach((vehicle) => {
-      occupancy.set(vehicle.node, vehicle.id);
-      vehicle.stats.blockingThisTurn = 0;
-    });
-    state.npcs.forEach((npc) => {
-      if (!occupancy.has(npc.node)) {
-        occupancy.set(npc.node, npc.id);
-      }
-    });
-
-    const requests = [];
-    const registry = new Map();
-
-    const registerRequest = (entity, nextNode, phaseRequirement) => {
-      const currentNode = entity.node;
-      const occupant = occupancy.get(nextNode);
-      const signal = state.graph.nodes.get(nextNode).signal;
-      let priority = signal ? 2 : 1;
-      if (signal && phaseRequirement && signal.phase !== phaseRequirement) {
-        return; // красный
-      }
-      if (entity.type !== 'npc' && signal && !phaseRequirement) {
-        priority = 2;
-      }
-      const entry = {
-        entity,
-        from: currentNode,
-        to: nextNode,
-        priority,
-        allowed: true
-      };
-      requests.push(entry);
-      registry.set(entity.id, entry);
-    };
-
-    state.vehicles.forEach((vehicle) => {
-      const plan = vehicle.routeSegments;
-      if (!plan || plan.length <= vehicle.routeIndex + 1) return;
-      if (vehicle.waitRemaining > 0) {
-        vehicle.waitRemaining -= 1;
-        return;
-      }
-      const nextSegment = plan[vehicle.routeIndex + 1];
-      const adjacency = state.graph.adjacency.get(vehicle.routeSegments[vehicle.routeIndex].node);
-      const link = adjacency.find((neighbor) => neighbor.to === nextSegment.node);
-      if (!link) return;
-      registerRequest(vehicle, nextSegment.node, link.phase);
-    });
-
-    state.npcs.forEach((npc) => {
-      if (!npc.path || npc.path.length <= npc.pathIndex + 1) {
-        assignNpcDestination(npc);
-      }
-      if (npc.waitRemaining > 0) {
-        npc.waitRemaining -= 1;
-        return;
-      }
-      const nextNode = npc.path[npc.pathIndex + 1];
-      if (!nextNode) return;
-      const adjacency = state.graph.adjacency.get(npc.path[npc.pathIndex]);
-      const link = adjacency.find((neighbor) => neighbor.to === nextNode);
-      if (!link) return;
-      if (!canNpcUseEdge(npc.path[npc.pathIndex], nextNode)) {
-        const updatedPath = npc.destination ? findNpcPath(npc.node, npc.destination) : null;
-        if (updatedPath && updatedPath.length > 1) {
-          npc.path = updatedPath;
-          npc.pathIndex = 0;
-          npc.waitRemaining = 0;
-        } else {
-          npc.waitRemaining = 1;
-        }
-        return;
-      }
-      registerRequest(npc, nextNode, link.phase);
-    });
-
-    const winners = resolveRequests(requests, occupancy);
-
-    winners.forEach((request) => {
-      const { entity, to } = request;
-      occupancy.delete(entity.node);
-      entity.node = to;
-      occupancy.set(entity.node, entity.id);
-      if (entity.id.startsWith('player')) {
-        const vehicle = entity;
-        vehicle.routeIndex += 1;
-        vehicle.waitRemaining = vehicle.routeSegments[vehicle.routeIndex]?.wait || 0;
-        vehicle.stats.distance += 1;
-      } else {
-        const npc = entity;
-        npc.pathIndex += 1;
-        npc.eta = Math.max(0, npc.path.length - npc.pathIndex - 1);
-      }
-    });
-
-    winners.forEach((request) => {
-      if (!request.entity.destination) return;
-      if (request.entity.id.startsWith('player')) {
-        const vehicle = request.entity;
-        if (vehicle.node === vehicle.destination) {
-          completeRoute(vehicle);
-        }
-      } else {
-        const npc = request.entity;
-        if (npc.node === npc.destination) {
-          assignNpcDestination(npc);
-        }
-      }
-    });
-
-    state.vehicles.forEach((vehicle) => {
-      if (vehicle.stats.blockingThisTurn > 0) {
-        vehicle.stats.blocking += 1;
-        vehicle.stats.clean = false;
-      }
-    });
-  }
-
-  function resolveRequests(requests, occupancy) {
-    const targets = new Map();
-    requests.forEach((request) => {
-      if (!targets.has(request.to)) targets.set(request.to, []);
-      targets.get(request.to).push(request);
-    });
-
-    const winners = new Map();
-    targets.forEach((group, targetNode) => {
-      const allowed = group.filter((req) => req.allowed !== false);
-      if (allowed.length === 0) return;
-      allowed.sort((a, b) => b.priority - a.priority);
-      if (allowed.length >= 2 && allowed[0].priority === allowed[1].priority) {
-        // вежливый стоп
-        allowed.forEach((req) => {
-          if (req.entity.id.startsWith('player')) {
-            const vehicle = req.entity;
-            setStatus(`${vehicle.name} остановилась на «вежливом стопе».`);
-          }
-          const occupantId = occupancy.get(targetNode);
-          if (occupantId) {
-            const blocker = findVehicleById(occupantId);
-            if (blocker && blocker.stats) blocker.stats.blockingThisTurn += 1;
-          }
-        });
-        return;
-      }
-      const winner = allowed[0];
-      winners.set(winner.entity.id, winner);
-    });
-
-    let changed = true;
-    while (changed) {
-      changed = false;
-      occupancy.forEach((occupantId, nodeId) => {
-        const occupantRequest = winners.get(occupantId);
-        if (!occupantRequest || occupantRequest.from !== nodeId) {
-          const blocked = Array.from(winners.values()).filter((req) => req.to === nodeId);
-          if (blocked.length > 0) {
-            blocked.forEach((req) => {
-              winners.delete(req.entity.id);
-              const occupant = findVehicleById(occupantId);
-              if (occupant?.stats) {
-                occupant.stats.blockingThisTurn += 1;
-              }
-            });
-            changed = true;
-          }
-        }
-      });
-    }
-
-    return Array.from(winners.values());
-  }
-
-  function findVehicleById(id) {
-    return state.vehicles.find((vehicle) => vehicle.id === id) || state.npcs.find((npc) => npc.id === id);
-  }
-
-  function canNpcUseEdge(fromId, toId) {
-    const key = edgeKey(fromId, toId);
-    const status = state.oneWays.get(key);
-    if (!status || !status.active || !status.allowed) return true;
-    return status.allowed === `${fromId}>${toId}`;
-  }
-
-  function handleEconomy() {
-    state.vehicles.forEach((vehicle) => {
-      if (vehicle.stats.blockingThisTurn > 0) {
-        const penaltyValue = Math.round(10 * vehicle.stats.blockingThisTurn * state.scenario.penaltyMultiplier);
-        const penalty = -penaltyValue;
-        state.balance += penalty;
-        state.penalties += penalty;
-        logEvent(`${vehicle.name}: штраф за блокировку ${penalty}₵.`);
-      }
-      vehicle.stats.blockingThisTurn = 0;
-    });
-  }
-
-  function completeRoute(vehicle) {
-    const distance = vehicle.stats.distance;
-    const turns = vehicle.stats.turns;
-    const base = 100 + 5 * distance;
-    const speedBonus = Math.max(0, 20 - turns) * 2;
-    const cleanMultiplier = vehicle.stats.clean ? 1.2 : 1;
-    const payout = Math.round((base + speedBonus) * cleanMultiplier);
-    state.balance += payout;
-    state.income += payout;
-    state.completedRoutes += 1;
-    logEvent(`${vehicle.name} завершила рейс: +${payout}₵ (дистанция ${distance}, ходов ${turns}).`);
-    assignNewDestination(vehicle);
-  }
-
-  function updateUI() {
-    dom.turnValue.textContent = state.turn;
-    dom.turnLimit.textContent = state.limit;
-    dom.turnsRemaining.textContent = Math.max(0, state.limit - state.turn);
-    dom.balanceValue.textContent = state.balance;
-    dom.incomeValue.textContent = `${state.income}₵`;
-    dom.penaltyValue.textContent = `${state.penalties}₵`;
-    dom.routeSummary.textContent = `${state.completedRoutes} завершено`;
-    updateVehicleList();
-    updateActionQueue();
-    updateLog();
-  }
-
-  function updateVehicleList() {
-    dom.vehicleList.innerHTML = '';
-    state.vehicles.forEach((vehicle) => {
-      const card = document.createElement('article');
-      card.className = 'vehicle-card';
-      if (state.selection?.id === vehicle.id) card.classList.add('active');
-      const header = document.createElement('header');
-      const title = document.createElement('strong');
-      title.textContent = vehicle.name;
-      const badge = document.createElement('span');
-      badge.textContent = vehicle.destination ? labelForNode(vehicle.destination) : '—';
-      header.append(title, badge);
-      const meta = document.createElement('div');
-      meta.className = 'vehicle-meta';
-      meta.innerHTML = `
-        <span>Позиция: ${labelForNode(vehicle.node)}</span>
-        <span>Дистанция: ${vehicle.stats.distance}</span>
-        <span>Ходы в рейсе: ${vehicle.stats.turns}</span>
-        <span>Маршрут: ${Math.max(0, vehicle.routeSegments.length - 1)} ребёр</span>
-      `;
-      card.append(header, meta);
-      card.addEventListener('click', () => selectVehicle(vehicle.id));
-      dom.vehicleList.appendChild(card);
-    });
-  }
-
-  function updateActionQueue() {
-    dom.actionQueue.innerHTML = '';
-    const entries = [];
-      state.pendingActions.routeEdits.forEach((action) => {
-        const vehicle = state.vehicles.find((v) => v.id === action.vehicleId);
-        if (!vehicle) return;
-        const length = Math.max(0, action.segments.length - 1);
-        entries.push(`Маршрут ${vehicle.name} обновится на ${length} рёбер.`);
-      });
-    state.pendingActions.signalSwitches.forEach((action) => {
-      const node = state.graph.nodes.get(action.nodeId);
-      if (!node) return;
-      entries.push(`Светофор «${node.label}» переключится.`);
-    });
-    state.pendingActions.oneWays.forEach((action) => {
-      const [from, to] = action.allowed.split('>');
-      entries.push(`Одностороннее движение: ${labelForNode(from)} → ${labelForNode(to)}.`);
-    });
-    if (entries.length === 0) {
-      const placeholder = document.createElement('li');
-      placeholder.textContent = 'На следующий ход действий не запланировано.';
-      dom.actionQueue.appendChild(placeholder);
-    } else {
-      entries.forEach((text) => {
-        const li = document.createElement('li');
-        li.textContent = text;
-        dom.actionQueue.appendChild(li);
-      });
-    }
-  }
-
-  function updateLog() {
-    dom.log.innerHTML = '';
-    state.logs.slice(-40).forEach((entry) => {
-      const div = document.createElement('div');
-      div.className = 'log-entry';
-      div.textContent = entry;
-      dom.log.appendChild(div);
-    });
-    dom.log.scrollTop = dom.log.scrollHeight;
-  }
-
-  function logEvent(text) {
-    state.logs.push(`Ход ${state.turn}: ${text}`);
-    updateLog();
-  }
-
-  function showNpcForecast(npc) {
-    if (!npc.path || npc.path.length === 0) return;
-    const upcoming = npc.path.slice(npc.pathIndex, npc.pathIndex + NPC_LOOKAHEAD + 1);
-    state.npcPreview = { path: upcoming };
-    const labels = upcoming.slice(1).map(labelForNode);
-    const eta = Math.max(0, upcoming.length - 1);
-    const message = labels.length > 0
-      ? `NPC из «${labelForNode(npc.node)}» направляется: ${labels.join(' → ')} (ETA ${eta} ходов).`
-      : `NPC ожидает на «${labelForNode(npc.node)}».`;
-    setStatus(message);
-  }
-
-  function toggleHelp(show) {
-    if (show) {
-      dom.helpOverlay.classList.remove('hidden');
-    } else {
-      dom.helpOverlay.classList.add('hidden');
-    }
-  }
-
-  function labelForNode(nodeId) {
-    const node = state.graph.nodes.get(nodeId);
-    return node ? node.label : nodeId;
-  }
-
-  function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-  }
-
-  function shuffled(source) {
-    const copy = [...source];
-    for (let i = copy.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [copy[i], copy[j]] = [copy[j], copy[i]];
-    }
-    return copy;
-  }
-
-  document.addEventListener('DOMContentLoaded', init);
-})();
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function (x, y, width, height, radius) {
+    const r = Math.min(radius, width / 2, height / 2);
+    this.beginPath();
+    this.moveTo(x + r, y);
+    this.arcTo(x + width, y, x + width, y + height, r);
+    this.arcTo(x + width, y + height, x, y + height, r);
+    this.arcTo(x, y + height, x, y, r);
+    this.arcTo(x, y, x + width, y, r);
+    this.closePath();
+    return this;
+  };
+}
