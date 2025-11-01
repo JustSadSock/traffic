@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Маршрутчики v0.2 — прототип</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+  <div id="ui">
+    <div class="left">
+      <h1>Маршрутчики v0.2</h1>
+      <div class="panel">
+        <div><strong>Ход:</strong> <span id="turn">1</span> / <span id="turnLimit">30</span></div>
+        <div><strong>Деньги:</strong> <span id="money">0</span>₵</div>
+        <div><strong>Рейсы:</strong> <span id="trips">0</span></div>
+        <div><strong>Штрафы:</strong> <span id="penalties">0</span>₵</div>
+      </div>
+
+      <div class="panel">
+        <div class="row">
+          <button id="toolRoute" class="tool active">Маршрут</button>
+          <button id="toolLight" class="tool">Светофор (10₵)</button>
+        </div>
+        <div class="row">
+          <button id="toolOneWay" class="tool">Односторонний (15₵)</button>
+          <button id="toolWait" class="tool">Ожидание (узел)</button>
+        </div>
+        <div class="row">
+          <button id="btnRecalc" class="tool">Пересчитать маршрут (5₵+1₵/ребро)</button>
+        </div>
+        <div class="row">
+          <button id="btnEndTurn" class="primary">Закончить ход</button>
+          <button id="btnNewSeed">Новая карта</button>
+        </div>
+        <div class="small">
+          Подсказки: клики по перекресткам переключают светофор (в режиме Светофор), 
+          клик по ребру — поставить временный односторонний знак, 
+          клик по узлу маршрута своей машины — задать ожидание (в режиме Ожидание).
+          По клику по «ничейной» машине видно прогноз маршрута.
+        </div>
+      </div>
+
+      <div class="panel small">
+        <div><strong>Правила (коротко)</strong></div>
+        <ul>
+          <li>30 ходов. 1 ребро за ход.</li>
+          <li>Доход: 100₵ + 5₵×L, бонус скорости (20−T)×2₵, чистый рейс ×1.2</li>
+          <li>Штрафы: ДТП −100₵ и простой 2 хода, красный −30₵, блокировка −10₵/ход</li>
+          <li>Светофор: автосмена 3/3, ручной свитч 10₵, КД 3 хода, удорожание в окне 10 ходов</li>
+          <li>Односторонний: 15₵, длится 3 хода, КД ребра 5 ходов</li>
+          <li>Правки маршрута оплачиваются</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="right">
+      <canvas id="game" width="1024" height="768"></canvas>
+      <div class="legend small">
+        <span class="badge node"></span> узел
+        <span class="badge light-green"></span> зеленый
+        <span class="badge light-red"></span> красный
+        <span class="badge oneway"></span> односторонний
+        <span class="badge player"></span> ваша машина
+        <span class="badge npc"></span> «ничейная» машина
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background: #0e0f12;
+  color: #e9ecf1;
+}
+#ui { display: flex; gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+.left { width: 360px; }
+.right { flex: 1; position: relative; }
+
+h1 { margin: 0 0 12px 0; font-size: 20px; color: #b4cffb; }
+.panel { background: #171a1f; border: 1px solid #222632; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+button { background: #222632; color: #e9ecf1; border: 1px solid #2c3140; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+button:hover { background: #2a3040; }
+button.primary { background: #3a7afe; border-color: #3a7afe; }
+button.primary:hover { background: #2f66d6; }
+button.tool.active { outline: 2px solid #3a7afe; }
+.small { font-size: 12px; color: #aab3c2; }
+.legend { margin-top: 6px; }
+.badge { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin: 0 6px 0 14px; vertical-align: middle; border: 1px solid #2c3140;}
+.badge.node { background: #6b7280; }
+.badge.light-green { background: #2ecc71; }
+.badge.light-red { background: #e74c3c; }
+.badge.oneway { background: #f39c12; }
+.badge.player { background: #3498db; }
+.badge.npc { background: #bdc3c7; }
+
+canvas { background: #0b0c0f; border: 1px solid #222632; border-radius: 10px; }
+
