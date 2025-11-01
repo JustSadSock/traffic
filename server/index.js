@@ -59,13 +59,15 @@ function generateCityMap() {
   const nodes = [];
   const adjacency = new Map();
   const nodeMap = new Map();
+  const MAX_DEGREE = 4;
+  const MIN_DEGREE = 2;
   let idCounter = 1;
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const id = `N${idCounter.toString().padStart(2, '0')}`;
       idCounter += 1;
-      const jitterX = randomBetween(-stepX * 0.25, stepX * 0.25);
-      const jitterY = randomBetween(-stepY * 0.25, stepY * 0.25);
+      const jitterX = randomBetween(-stepX * 0.18, stepX * 0.18);
+      const jitterY = randomBetween(-stepY * 0.18, stepY * 0.18);
       const x = marginX + col * stepX + jitterX;
       const y = marginY + row * stepY + jitterY;
       const node = { id, x, y };
@@ -77,6 +79,7 @@ function generateCityMap() {
 
   const edges = [];
   const edgeSet = new Set();
+
   const EPSILON = 1e-6;
   const orientation = (p, q, r) => {
     const val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
@@ -100,6 +103,7 @@ function generateCityMap() {
     if (o4 === 0 && onSegment(p3, p2, p4)) return true;
     return false;
   };
+
   const wouldCross = (aId, bId) => {
     const pa = nodeMap.get(aId);
     const pb = nodeMap.get(bId);
@@ -115,15 +119,21 @@ function generateCityMap() {
     }
     return false;
   };
-  const addEdge = (a, b) => {
-    if (!a || !b || a === b) return;
+
+  const addEdge = (a, b, options = {}) => {
+    if (!a || !b || a === b) return false;
     const key = a < b ? `${a}-${b}` : `${b}-${a}`;
-    if (edgeSet.has(key)) return;
-    if (wouldCross(a, b)) return;
+    if (edgeSet.has(key)) return false;
+    if (!options.force) {
+      if ((adjacency.get(a)?.size || 0) >= MAX_DEGREE) return false;
+      if ((adjacency.get(b)?.size || 0) >= MAX_DEGREE) return false;
+    }
+    if (wouldCross(a, b)) return false;
     edgeSet.add(key);
     edges.push([a, b]);
     adjacency.get(a)?.add(b);
     adjacency.get(b)?.add(a);
+    return true;
   };
 
   const indexOf = (row, col) => row * cols + col;
@@ -138,36 +148,52 @@ function generateCityMap() {
       if (row < rows - 1) {
         addEdge(current.id, nodes[indexOf(row + 1, col)]?.id);
       }
-      if (row < rows - 1 && col < cols - 1 && Math.random() < 0.6) {
+      if (
+        row < rows - 1 &&
+        col < cols - 1 &&
+        Math.random() < 0.25 &&
+        (adjacency.get(current.id)?.size || 0) < MAX_DEGREE
+      ) {
         addEdge(current.id, nodes[indexOf(row + 1, col + 1)]?.id);
       }
-      if (row < rows - 1 && col > 0 && Math.random() < 0.45) {
+      if (
+        row < rows - 1 &&
+        col > 0 &&
+        Math.random() < 0.2 &&
+        (adjacency.get(current.id)?.size || 0) < MAX_DEGREE
+      ) {
         addEdge(current.id, nodes[indexOf(row + 1, col - 1)]?.id);
       }
     }
   }
 
-  const typicalSpan = Math.hypot(stepX, stepY) * 1.2;
-  const extras = Math.floor(nodes.length * 2.4);
+  const typicalSpan = Math.hypot(stepX, stepY);
+  const extras = Math.floor(nodes.length * 0.8);
   for (let i = 0; i < extras; i += 1) {
     const a = nodes[Math.floor(Math.random() * nodes.length)];
     if (!a) continue;
-    const radius = typicalSpan * randomBetween(0.6, 1.5);
+    if ((adjacency.get(a.id)?.size || 0) >= MAX_DEGREE - 1) continue;
+    const radius = typicalSpan * randomBetween(0.6, 1.2);
     const candidates = nodes
-      .filter((node) => node.id !== a.id && distance(node, a) <= radius)
+      .filter((node) => node.id !== a.id && !adjacency.get(a.id)?.has(node.id))
+      .filter((node) => (adjacency.get(node.id)?.size || 0) < MAX_DEGREE - 1)
+      .filter((node) => distance(node, a) <= radius)
       .sort((node1, node2) => distance(node1, a) - distance(node2, a));
     if (!candidates.length) continue;
-    const b = candidates[Math.floor(Math.random() * candidates.length)];
-    addEdge(a.id, b.id);
+    const b = candidates[Math.floor(Math.random() * Math.min(3, candidates.length))];
+    addEdge(a.id, b?.id);
   }
 
   for (const node of nodes) {
-    const potentials = nodes
+    const currentDegree = adjacency.get(node.id)?.size || 0;
+    if (currentDegree >= MIN_DEGREE) continue;
+    const candidates = nodes
       .filter((other) => other.id !== node.id && !adjacency.get(node.id)?.has(other.id))
-      .sort((a, b) => distance(a, node) - distance(b, node))
-      .slice(0, 3);
-    for (const candidate of potentials) {
-      addEdge(node.id, candidate.id);
+      .filter((other) => (adjacency.get(other.id)?.size || 0) < MAX_DEGREE)
+      .sort((a, b) => distance(a, node) - distance(b, node));
+    for (const candidate of candidates) {
+      if ((adjacency.get(node.id)?.size || 0) >= MIN_DEGREE) break;
+      addEdge(node.id, candidate.id, { force: true });
     }
   }
 
@@ -199,7 +225,9 @@ function generateCityMap() {
     const anchor = components[0];
     const from = detached[Math.floor(Math.random() * detached.length)];
     const to = anchor[Math.floor(Math.random() * anchor.length)];
-    addEdge(from, to);
+    if (!addEdge(from, to, { force: true })) {
+      break;
+    }
     components = buildComponents();
   }
 
