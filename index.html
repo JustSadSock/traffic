@@ -3,134 +3,169 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Маршрутчики — новая редакция</title>
+  <title>Маршрутчики v0.2</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="app">
-    <header class="top-bar">
+  <div id="app" class="app" data-theme="sunrise">
+    <header class="app-header">
       <div class="brand">
         <h1>Маршрутчики</h1>
-        <span class="tagline">современный диспетчерский симулятор</span>
+        <p>режим диспетчера, правила v0.2</p>
       </div>
-      <nav class="mode-indicator">
-        <span id="modeLabel">—</span>
-      </nav>
+      <div class="header-stats">
+        <div class="stat">
+          <span>Ход</span>
+          <strong><span id="turnValue">0</span>/<span id="turnLimit">30</span></strong>
+        </div>
+        <div class="stat">
+          <span>Баланс</span>
+          <strong><span id="balanceValue">0</span>₵</strong>
+        </div>
+        <div class="stat">
+          <span>Очки рейсов</span>
+          <strong id="routeSummary">0 завершено</strong>
+        </div>
+        <button id="btnEndTurn" class="primary">Следующий ход</button>
+      </div>
     </header>
 
-    <div class="status-bar">
-      <div>Ход: <span id="turnValue">0</span> / <span id="turnLimit">0</span></div>
-      <div>Активный игрок: <span id="activePlayer">—</span></div>
-      <div>Пассажиры: <span id="passengerCount">0</span></div>
-      <div class="controls">
-        <button id="btnEndTurn" class="primary">Завершить ход</button>
-        <button id="btnBackToMenu">В меню</button>
-      </div>
-    </div>
-
-    <main class="layout">
-      <section class="board">
-        <canvas id="gameCanvas" width="960" height="720"></canvas>
+    <main class="app-main">
+      <section class="board" aria-label="Игровая карта">
+        <canvas id="gameCanvas" width="960" height="720" role="img" aria-label="Схема города"></canvas>
+        <div id="boardHint" class="board-hint"></div>
       </section>
-      <aside class="sidebar">
-        <section class="panel">
-          <h2>Сводка</h2>
-          <div class="summary">
-            <div><strong>Раунд:</strong> <span id="roundSummary">—</span></div>
-            <div><strong>Сложность:</strong> <span id="difficultySummary">—</span></div>
-          </div>
+      <aside class="side">
+        <section class="panel summary">
+          <header class="panel-header">
+            <h2>Сводка смены</h2>
+            <button id="btnShowHelp" class="ghost">?</button>
+          </header>
+          <dl class="summary-list">
+            <div>
+              <dt>Оставшиеся ходы</dt>
+              <dd id="turnsRemaining">30</dd>
+            </div>
+            <div>
+              <dt>Доход за смену</dt>
+              <dd id="incomeValue">0₵</dd>
+            </div>
+            <div>
+              <dt>Штрафы</dt>
+              <dd id="penaltyValue">0₵</dd>
+            </div>
+          </dl>
         </section>
-        <section class="panel">
-          <h2>Игроки</h2>
-          <ul id="playerList" class="player-list"></ul>
+
+        <section class="panel vehicles">
+          <header class="panel-header">
+            <h2>Маршрутки</h2>
+          </header>
+          <div id="vehicleList" class="vehicle-list"></div>
         </section>
-        <section class="panel log-panel">
-          <h2>Журнал</h2>
+
+        <section class="panel actions">
+          <header class="panel-header">
+            <h2>План на следующий ход</h2>
+          </header>
+          <ul id="actionQueue" class="action-queue"></ul>
+        </section>
+
+        <section class="panel log">
+          <header class="panel-header">
+            <h2>Журнал</h2>
+          </header>
           <div id="log" class="log"></div>
         </section>
       </aside>
     </main>
 
-    <div id="menuOverlay" class="overlay visible">
-      <div class="overlay-card">
-        <h2>Выберите режим игры</h2>
-        <p>Постройте эффективную сеть маршрутов, доставляйте пассажиров и выигрывайте раунд за раундом.</p>
-        <div class="mode-grid">
-          <button class="mode-button" data-mode="solo">Одиночная игра</button>
-          <button class="mode-button" data-mode="local">Локальный мультиплеер</button>
-          <button class="mode-button" data-mode="online">Онлайн</button>
-        </div>
-
-        <form id="soloForm" class="mode-form" data-mode="solo">
-          <h3>Одиночная игра</h3>
-          <label>Ваш позывной
-            <input type="text" name="name" value="Диспетчер" required />
-          </label>
-          <label>Сложность
-            <select name="difficulty">
-              <option value="normal" selected>Нормальная</option>
-              <option value="hard">Сложная</option>
-              <option value="relaxed">Спокойная</option>
-            </select>
-          </label>
-          <label>NPC-маршруток
-            <input type="number" name="npc" min="1" max="5" value="2" />
-          </label>
-          <button type="submit" class="primary">Начать</button>
-        </form>
-
-        <form id="localForm" class="mode-form" data-mode="local">
-          <h3>Локальный мультиплеер</h3>
-          <label>Количество игроков
-            <select name="count">
-              <option value="2">2</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-            </select>
-          </label>
-          <div class="local-names"></div>
-          <button type="submit" class="primary">Старт</button>
-        </form>
-
-        <form id="onlineForm" class="mode-form" data-mode="online">
-          <h3>Онлайн</h3>
-          <div class="online-tabs">
-            <button type="button" data-tab="create" class="active">Создать лобби</button>
-            <button type="button" data-tab="join">Присоединиться</button>
-          </div>
-          <div class="online-panels">
-            <div class="online-panel" data-panel="create">
-              <label>Ваш позывной
-                <input type="text" name="hostName" value="Хост" required />
-              </label>
-              <label>Макс. игроков
-                <select name="max">
-                  <option value="2">2</option>
-                  <option value="3">3</option>
-                  <option value="4" selected>4</option>
-                </select>
-              </label>
-              <button type="button" data-action="create" class="primary">Создать лобби</button>
-            </div>
-            <div class="online-panel hidden" data-panel="join">
-              <label>Ваш позывной
-                <input type="text" name="guestName" value="Гость" required />
-              </label>
-              <label>Код лобби
-                <input type="text" name="code" placeholder="ABCD" maxlength="6" required />
-              </label>
-              <button type="button" data-action="join" class="primary">Войти</button>
-            </div>
-          </div>
-          <div class="online-status hidden" id="onlineStatus"></div>
-          <div class="online-lobby hidden" id="onlineLobby">
-            <p>Поделитесь кодом с друзьями:</p>
-            <div class="lobby-code" id="lobbyCode">—</div>
-            <ul id="lobbyPlayers" class="player-list"></ul>
-            <button type="button" id="btnStartOnline" class="primary">Запустить игру</button>
-          </div>
-        </form>
+    <footer class="app-footer">
+      <div class="footer-actions">
+        <button id="btnPlanRoute" class="secondary" disabled>Построить маршрут</button>
+        <button id="btnSetWait" class="secondary" disabled>Настроить ожидание</button>
+        <button id="btnSignal" class="secondary">Переключить светофор</button>
+        <button id="btnOneWay" class="secondary">Временный односторонний</button>
+        <button id="btnCancelMode" class="ghost" disabled>Отмена</button>
       </div>
+        <div id="statusMessage" class="status-message">Выберите маршрутку, чтобы спланировать маршрут.</div>
+    </footer>
+  </div>
+
+  <div id="startScreen" class="modal visible">
+    <div class="modal-card start">
+      <header>
+        <h2>Начало смены</h2>
+        <p>Выберите настроение города и палитру. Игра рассчитана на одного диспетчера, две маршрутки и оживлённый NPC-трафик.</p>
+      </header>
+      <div class="scenario-grid">
+        <button class="scenario-card" data-scenario="weekday">
+          <span class="scenario-icon">🌅</span>
+          <strong>Будний рассвет</strong>
+          <p>Базовые параметры правил v0.2. Отлично, чтобы освоиться.</p>
+        </button>
+        <button class="scenario-card" data-scenario="market">
+          <span class="scenario-icon">🧺</span>
+          <strong>Базарный день</strong>
+          <p>Больше NPC и плотнее пробки — следите за маршрутами.</p>
+        </button>
+        <button class="scenario-card" data-scenario="night">
+          <span class="scenario-icon">🌙</span>
+          <strong>Ночная смена</strong>
+          <p>Меньше трафика, но рейсы дольше и штрафы ощутимее.</p>
+        </button>
+      </div>
+      <div class="start-controls">
+        <label for="paletteSelect">Палитра</label>
+        <select id="paletteSelect">
+          <option value="sunrise" selected>Рассвет</option>
+          <option value="mint">Мятный снег</option>
+          <option value="lilac">Сумерки</option>
+        </select>
+      </div>
+      <button id="btnStartGame" class="primary" disabled>Начать смену</button>
+    </div>
+  </div>
+
+  <div id="routeEditor" class="modal hidden">
+    <div class="modal-card route">
+      <header>
+        <h2 id="routeTitle">Маршрут</h2>
+        <p id="routeSubtitle">Кликните по узлам на карте, чтобы построить путь.</p>
+      </header>
+      <div class="route-body">
+        <div class="route-list" id="routeList"></div>
+        <aside class="route-meta">
+          <div>Цель рейса: <span id="routeDestination">—</span></div>
+          <div>Длина пути: <span id="routeLength">0</span> рёбер</div>
+          <div>Стоимость правки: <span id="routeCost">0₵</span></div>
+        </aside>
+      </div>
+      <footer class="route-footer">
+        <button id="btnConfirmRoute" class="primary" disabled>Запланировать</button>
+        <button id="btnCloseRoute" class="ghost">Закрыть</button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="helpOverlay" class="modal hidden">
+    <div class="modal-card help">
+      <header>
+        <h2>Правила смены (v0.2)</h2>
+      </header>
+      <div class="help-scroll">
+        <p>Смена длится 30 ходов. Управляйте двумя маршрутками, соблюдая очередность действий: планируйте изменения, ждите следующий ход и наблюдайте за результатом. NPC-трафик следует ПДД и реагирует на временные знаки.</p>
+        <ul>
+          <li>Правка маршрута: 5₵ + 1₵ за каждое новое ребро. Вступает в силу в начале следующего хода.</li>
+          <li>Переключение светофора: 10₵ + 10₵ за повтор в пределах 10 ходов. Кулдаун на перекрёсток — 3 хода.</li>
+          <li>Временный односторонний знак: 15₵, действует 3 хода и откатывается после кулдауна в 5 ходов.</li>
+          <li>Доход за рейс: 100₵ + 5₵ × рёбра, плюс бонус скорости и множитель за «чистый» рейс без блокировок.</li>
+        </ul>
+        <p>Клики по NPC показывают прогноз маршрута и ETA на 5 узлов вперёд.</p>
+      </div>
+      <footer>
+        <button id="btnCloseHelp" class="primary">Понятно</button>
+      </footer>
     </div>
   </div>
 
