@@ -1,72 +1,126 @@
 <!DOCTYPE html>
 <html lang="ru">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Маршрутчики v0.2 — прототип</title>
-  <link rel="stylesheet" href="style.css"/>
-</head>
-<body>
-  <div id="ui">
-    <div class="left">
-      <h1>Маршрутчики v0.2</h1>
-      <div class="panel">
-        <div><strong>Ход:</strong> <span id="turn">1</span> / <span id="turnLimit">30</span></div>
-        <div><strong>Деньги:</strong> <span id="money">0</span>₵</div>
-        <div><strong>Рейсы:</strong> <span id="trips">0</span></div>
-        <div><strong>Штрафы:</strong> <span id="penalties">0</span>₵</div>
-      </div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trafficity — дуэль маршрутов</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app" class="app" data-theme="pastel">
+      <header class="app-header">
+        <div class="brand-block">
+          <h1>Trafficity</h1>
+          <p>Протяни идеальный маршрут и обгони соперника за 30 ходов.</p>
+        </div>
+        <div class="score-block">
+          <div id="scorePlayers" class="score-list"></div>
+          <div class="turn-counter">
+            <span class="label">Ход</span>
+            <strong id="turnLabel">0 / 30</strong>
+          </div>
+        </div>
+        <div class="controls">
+          <button id="btnToggleNodes" class="ghost">Показать узлы</button>
+          <button id="btnAdvance" class="primary" disabled>Следующий ход</button>
+        </div>
+      </header>
 
-      <div class="panel">
-        <div class="row">
-          <button id="toolRoute" class="tool active">Маршрут</button>
-          <button id="toolLight" class="tool">Светофор (10₵)</button>
-        </div>
-        <div class="row">
-          <button id="toolOneWay" class="tool">Односторонний (15₵)</button>
-          <button id="toolWait" class="tool">Ожидание (узел)</button>
-        </div>
-        <div class="row">
-          <button id="btnRecalc" class="tool">Пересчитать маршрут (5₵+1₵/ребро)</button>
-        </div>
-        <div class="row">
-          <button id="btnEndTurn" class="primary">Закончить ход</button>
-          <button id="btnNewSeed">Новая карта</button>
-        </div>
-        <div class="small">
-          Подсказки: клики по перекресткам переключают светофор (в режиме Светофор), 
-          клик по ребру — поставить временный односторонний знак, 
-          клик по узлу маршрута своей машины — задать ожидание (в режиме Ожидание).
-          По клику по «ничейной» машине видно прогноз маршрута.
-        </div>
-      </div>
+      <main class="app-main">
+        <section class="board" aria-label="Городская карта">
+          <canvas id="gameCanvas" width="1200" height="780" role="img" aria-label="Городская трасса"></canvas>
+          <div id="hint" class="hint"></div>
+        </section>
+        <aside class="sidebar">
+          <section class="panel">
+            <header>
+              <h2>Машины</h2>
+              <p id="activePlayerLabel">Режим ожидания</p>
+            </header>
+            <div id="vehicleList" class="vehicle-list"></div>
+          </section>
+          <section class="panel actions">
+            <header>
+              <h2>Действия</h2>
+            </header>
+            <div class="actions-body">
+              <p class="note">
+                Зажмите свою машину на карте и протяните маршрут через узлы до цели. Для задержки перетащите жетон «Стоп» на нужный узел.
+              </p>
+              <label class="stop-label" for="stopAmount">Ходов ожидания: <span id="stopAmountLabel">1</span></label>
+              <input type="range" id="stopAmount" min="1" max="5" value="1" />
+              <button id="stopHandle" class="stop-handle" draggable="true" disabled>
+                ⏱️ Стоп
+              </button>
+            </div>
+          </section>
+          <section class="panel log">
+            <header>
+              <h2>Журнал</h2>
+            </header>
+            <div id="log" class="log-list"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
 
-      <div class="panel small">
-        <div><strong>Правила (коротко)</strong></div>
-        <ul>
-          <li>30 ходов. 1 ребро за ход.</li>
-          <li>Доход: 100₵ + 5₵×L, бонус скорости (20−T)×2₵, чистый рейс ×1.2</li>
-          <li>Штрафы: ДТП −100₵ и простой 2 хода, красный −30₵, блокировка −10₵/ход</li>
-          <li>Светофор: автосмена 3/3, ручной свитч 10₵, КД 3 хода, удорожание в окне 10 ходов</li>
-          <li>Односторонний: 15₵, длится 3 хода, КД ребра 5 ходов</li>
-          <li>Правки маршрута оплачиваются</li>
-        </ul>
+    <div id="modeScreen" class="menu visible" role="dialog" aria-modal="true">
+      <div class="menu-shell">
+        <section class="menu-hero">
+          <div class="menu-title">
+            <h2>Trafficity</h2>
+            <p>
+              Дуэль городских пилотов: ведите машины по скрытым узлам, ставьте стопы и
+              обгоняйте соперника за 30 ходов.
+            </p>
+          </div>
+          <div class="menu-settings">
+            <h3>Настройки гонщика</h3>
+            <label class="field">
+              <span>Ваше имя</span>
+              <input id="prefPlayerName" type="text" maxlength="24" placeholder="Например, Виолетта" />
+            </label>
+            <label class="toggle">
+              <input id="prefShowNodes" type="checkbox" />
+              <span>Показывать узлы на старте партии</span>
+            </label>
+            <ul class="menu-highlights">
+              <li>🎯 Новая карта генерируется для каждой партии.</li>
+              <li>🖱️ Маршруты задаются простым перетягиванием от машин.</li>
+              <li>📱 Интерфейс адаптирован под экраны ПК и телефонов.</li>
+            </ul>
+          </div>
+        </section>
+        <section class="menu-panel">
+          <header class="menu-header">
+            <h3>Режим</h3>
+            <p>Выберите тип партии и настройте параметры, затем нажмите «Начать».</p>
+          </header>
+          <div class="mode-grid" role="tablist">
+            <button class="mode-card" data-mode="solo" role="tab" aria-selected="false">
+              <span class="icon">🤖</span>
+              <strong>Одиночная дуэль</strong>
+              <p>Сразитесь с автопилотом, управляя двумя машинами.</p>
+            </button>
+            <button class="mode-card" data-mode="local" role="tab" aria-selected="false">
+              <span class="icon">👥</span>
+              <strong>Локальная игра</strong>
+              <p>2–4 человека по очереди планируют маршруты на одном устройстве.</p>
+            </button>
+            <button class="mode-card" data-mode="online" role="tab" aria-selected="false">
+              <span class="icon">🌐</span>
+              <strong>Онлайн матч</strong>
+              <p>Подключаемся к серверу irgri.uk автоматически и находим соперников.</p>
+            </button>
+          </div>
+          <div id="modeDetails" class="mode-details" role="tabpanel"></div>
+          <footer class="menu-footer">
+            <button id="btnStart" class="primary" disabled>Начать игру</button>
+          </footer>
+        </section>
       </div>
     </div>
 
-    <div class="right">
-      <canvas id="game" width="1024" height="768"></canvas>
-      <div class="legend small">
-        <span class="badge node"></span> узел
-        <span class="badge light-green"></span> зеленый
-        <span class="badge light-red"></span> красный
-        <span class="badge oneway"></span> односторонний
-        <span class="badge player"></span> ваша машина
-        <span class="badge npc"></span> «ничейная» машина
-      </div>
-    </div>
-  </div>
-
-  <script src="game.js"></script>
-</body>
+    <script src="game.js" type="module"></script>
+  </body>
 </html>

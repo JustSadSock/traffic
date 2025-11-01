@@ -1,0 +1,14 @@
+{
+  "name": "trafficity",
+  "version": "1.0.0",
+  "description": "Trafficity — дуэль маршрутов с локальными и онлайн-режимами",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2"
+  }
+}

@@ -1,858 +1,1852 @@
-// Маршрутчики v0.2 — прототип.
-// Один HTML + JS + CSS. Рендер через canvas. Минимально достаточный функционал.
-// Ограничения: одиночная игра против «ничейного» трафика (NPC).
+const TURN_LIMIT = 30;
+const PLAYER_COLORS = ['#ff8ba7', '#70d6ff', '#ffd166', '#6ef2a5'];
+const VEHICLE_EMOJIS = ['①', '②'];
 
-// -------------------- Утилиты --------------------
-function randInt(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function dist(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return Math.hypot(dx, dy); }
+const MAP_BOUNDS = { width: 1200, height: 780 };
+const ROAD_WIDTH = 38;
+const VEHICLE_LANE_OFFSET = ROAD_WIDTH * 0.18;
+const DESTINATION_THEMES = [
+  { label: 'Парк светлячков', color: '#8bd3dd', icon: '🌿' },
+  { label: 'Ванильная кофейня', color: '#ffd6a5', icon: '☕' },
+  { label: 'Бирюзовый лофт', color: '#9bf6ff', icon: '🏙️' },
+  { label: 'Лавандовая площадь', color: '#cdb4db', icon: '🌸' },
+  { label: 'Солнечный рынок', color: '#ffe066', icon: '🛍️' },
+  { label: 'Озеро Дрифтвуд', color: '#b5e48c', icon: '🛶' },
+  { label: 'Коралловая набережная', color: '#ffafcc', icon: '🌊' },
+  { label: 'Неоновый гараж', color: '#a0c4ff', icon: '🛠️' },
+];
 
-// Простая очередь
-class Queue {
-  constructor() { this.a = []; this.b = 0; }
-  enqueue(x) { this.a.push(x); }
-  dequeue() { if (this.size() === 0) return undefined; const x = this.a[this.b++]; if (this.b*2 >= this.a.length){ this.a = this.a.slice(this.b); this.b = 0; } return x; }
-  size() { return this.a.length - this.b; }
+const ONLINE_HTTP = 'https://irgri.uk/';
+const ONLINE_WS = 'wss://irgri.uk/';
+
+const elements = {
+  canvas: document.getElementById('gameCanvas'),
+  board: document.querySelector('.board'),
+  hint: document.getElementById('hint'),
+  btnAdvance: document.getElementById('btnAdvance'),
+  btnToggleNodes: document.getElementById('btnToggleNodes'),
+  vehicleList: document.getElementById('vehicleList'),
+  log: document.getElementById('log'),
+  turnLabel: document.getElementById('turnLabel'),
+  activePlayerLabel: document.getElementById('activePlayerLabel'),
+  modeScreen: document.getElementById('modeScreen'),
+  modeDetails: document.getElementById('modeDetails'),
+  btnStart: document.getElementById('btnStart'),
+  stopAmount: document.getElementById('stopAmount'),
+  stopAmountLabel: document.getElementById('stopAmountLabel'),
+  stopHandle: document.getElementById('stopHandle'),
+  scorePlayers: document.getElementById('scorePlayers'),
+  prefShowNodes: document.getElementById('prefShowNodes'),
+  prefPlayerName: document.getElementById('prefPlayerName'),
+};
+
+const ctx = elements.canvas.getContext('2d');
+const view = { scale: 1, pixelScale: 1 };
+
+const state = {
+  map: { width: MAP_BOUNDS.width, height: MAP_BOUNDS.height, nodes: [], edges: [] },
+  graph: new Map(),
+  destinations: [],
+  running: false,
+  mode: null,
+  showNodes: false,
+  preferences: {
+    showNodes: false,
+    playerName: '',
+  },
+  players: [],
+  vehicles: [],
+  selectedVehicleId: null,
+  turn: 0,
+  turnLimit: TURN_LIMIT,
+  log: [],
+  hint: 'Выберите режим, чтобы начать игру.',
+  localPlayerId: null,
+  online: null,
+  activePlayer: null,
+  roomCode: null,
+  interaction: {
+    active: false,
+    type: null,
+    vehicleId: null,
+    path: [],
+    hoverNode: null,
+    pointerId: null,
+  },
+  stopDrag: {
+    active: false,
+    vehicleId: null,
+    amount: 1,
+    hoverNode: null,
+  },
+};
+
+setMap(generateCityMap());
+
+function randomBetween(min, max) {
+  return min + Math.random() * (max - min);
 }
 
-// -------------------- Граф дорог --------------------
-class Node {
-  constructor(id, x, y) {
-    this.id = id;
-    this.x = x;
-    this.y = y;
-    this.neighbors = new Set(); // ids
-    this.light = null; // TrafficLight, если перекресток
+function shuffle(array) {
+  const result = array.slice();
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
   }
+  return result;
 }
 
-class Edge {
-  constructor(a, b) {
-    this.a = a; this.b = b; // node ids
-    this.oneWay = null; // { allowFrom: a|b, ttl: N, cd: M } если временный односторонний
-    this.cd = 0; // кулдаун установки одностороннего
-  }
-  key() { return Edge.key(this.a, this.b); }
-  static key(a, b) { return a < b ? `${a}-${b}` : `${b}-${a}`; }
-}
-
-class TrafficLight {
-  constructor(nodeId, axis) {
-    // axis: массив пар направлений или просто 2 состояния
-    this.nodeId = nodeId;
-    this.timer = 3; // по умолчанию 3/3
-    this.state = 0; // 0 или 1
-    this.autoCycle = 3;
-    this.cooldown = 0; // КД после ручного свитча
-    this.lastManualTurn = -9999; // для удорожания в окне 10 ходов
-  }
-  tick() {
-    if (--this.timer <= 0) {
-      this.state = 1 - this.state;
-      this.timer = this.autoCycle;
+function generateCityMap() {
+  const width = MAP_BOUNDS.width;
+  const height = MAP_BOUNDS.height;
+  const cols = 7;
+  const rows = 5;
+  const marginX = 80;
+  const marginY = 90;
+  const stepX = (width - marginX * 2) / (cols - 1);
+  const stepY = (height - marginY * 2) / (rows - 1);
+  const nodes = [];
+  const adjacency = new Map();
+  const nodeMap = new Map();
+  const MAX_DEGREE = 4;
+  const MIN_DEGREE = 2;
+  let idCounter = 1;
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const id = `N${idCounter.toString().padStart(2, '0')}`;
+      idCounter += 1;
+      const jitterX = randomBetween(-stepX * 0.18, stepX * 0.18);
+      const jitterY = randomBetween(-stepY * 0.18, stepY * 0.18);
+      const x = marginX + col * stepX + jitterX;
+      const y = marginY + row * stepY + jitterY;
+      const node = { id, x, y };
+      nodes.push(node);
+      adjacency.set(id, new Set());
+      nodeMap.set(id, node);
     }
-    if (this.cooldown > 0) this.cooldown--;
   }
-  manualSwitch(currentTurn) {
-    if (this.cooldown > 0) return false;
-    this.state = 1 - this.state;
-    this.timer = this.autoCycle;
-    this.cooldown = 3;
-    this.lastManualTurn = currentTurn;
+
+  const edges = [];
+  const edgeSet = new Set();
+
+  const EPSILON = 1e-6;
+  const orientation = (p, q, r) => {
+    const val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+    if (Math.abs(val) < EPSILON) return 0;
+    return val > 0 ? 1 : 2;
+  };
+  const onSegment = (p, q, r) =>
+    Math.min(p.x, r.x) - EPSILON <= q.x &&
+    q.x <= Math.max(p.x, r.x) + EPSILON &&
+    Math.min(p.y, r.y) - EPSILON <= q.y &&
+    q.y <= Math.max(p.y, r.y) + EPSILON;
+  const segmentsIntersect = (p1, p2, p3, p4) => {
+    const o1 = orientation(p1, p2, p3);
+    const o2 = orientation(p1, p2, p4);
+    const o3 = orientation(p3, p4, p1);
+    const o4 = orientation(p3, p4, p2);
+    if (o1 !== o2 && o3 !== o4) return true;
+    if (o1 === 0 && onSegment(p1, p3, p2)) return true;
+    if (o2 === 0 && onSegment(p1, p4, p2)) return true;
+    if (o3 === 0 && onSegment(p3, p1, p4)) return true;
+    if (o4 === 0 && onSegment(p3, p2, p4)) return true;
+    return false;
+  };
+
+  const wouldCross = (aId, bId) => {
+    const pa = nodeMap.get(aId);
+    const pb = nodeMap.get(bId);
+    if (!pa || !pb) return true;
+    for (const [cId, dId] of edges) {
+      if (aId === cId || aId === dId || bId === cId || bId === dId) continue;
+      const pc = nodeMap.get(cId);
+      const pd = nodeMap.get(dId);
+      if (!pc || !pd) continue;
+      if (segmentsIntersect(pa, pb, pc, pd)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const addEdge = (a, b, options = {}) => {
+    if (!a || !b || a === b) return false;
+    const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+    if (edgeSet.has(key)) return false;
+    if (!options.force) {
+      if ((adjacency.get(a)?.size || 0) >= MAX_DEGREE) return false;
+      if ((adjacency.get(b)?.size || 0) >= MAX_DEGREE) return false;
+    }
+    if (wouldCross(a, b)) return false;
+    edgeSet.add(key);
+    edges.push([a, b]);
+    adjacency.get(a)?.add(b);
+    adjacency.get(b)?.add(a);
+    return true;
+  };
+
+  const indexOf = (row, col) => row * cols + col;
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const current = nodes[indexOf(row, col)];
+      if (!current) continue;
+      if (col < cols - 1) {
+        addEdge(current.id, nodes[indexOf(row, col + 1)]?.id);
+      }
+      if (row < rows - 1) {
+        addEdge(current.id, nodes[indexOf(row + 1, col)]?.id);
+      }
+      if (
+        row < rows - 1 &&
+        col < cols - 1 &&
+        Math.random() < 0.25 &&
+        (adjacency.get(current.id)?.size || 0) < MAX_DEGREE
+      ) {
+        addEdge(current.id, nodes[indexOf(row + 1, col + 1)]?.id);
+      }
+      if (
+        row < rows - 1 &&
+        col > 0 &&
+        Math.random() < 0.2 &&
+        (adjacency.get(current.id)?.size || 0) < MAX_DEGREE
+      ) {
+        addEdge(current.id, nodes[indexOf(row + 1, col - 1)]?.id);
+      }
+    }
+  }
+
+  const typicalSpan = Math.hypot(stepX, stepY);
+  const extras = Math.floor(nodes.length * 0.8);
+  for (let i = 0; i < extras; i += 1) {
+    const a = nodes[Math.floor(Math.random() * nodes.length)];
+    if (!a) continue;
+    if ((adjacency.get(a.id)?.size || 0) >= MAX_DEGREE - 1) continue;
+    const radius = typicalSpan * randomBetween(0.6, 1.2);
+    const candidates = nodes
+      .filter((node) => node.id !== a.id && !adjacency.get(a.id)?.has(node.id))
+      .filter((node) => (adjacency.get(node.id)?.size || 0) < MAX_DEGREE - 1)
+      .filter((node) => distance(node, a) <= radius)
+      .sort((node1, node2) => distance(node1, a) - distance(node2, a));
+    if (!candidates.length) continue;
+    const b = candidates[Math.floor(Math.random() * Math.min(3, candidates.length))];
+    addEdge(a.id, b?.id);
+  }
+
+  for (const node of nodes) {
+    const currentDegree = adjacency.get(node.id)?.size || 0;
+    if (currentDegree >= MIN_DEGREE) continue;
+    const candidates = nodes
+      .filter((other) => other.id !== node.id && !adjacency.get(node.id)?.has(other.id))
+      .filter((other) => (adjacency.get(other.id)?.size || 0) < MAX_DEGREE)
+      .sort((a, b) => distance(a, node) - distance(b, node));
+    for (const candidate of candidates) {
+      if ((adjacency.get(node.id)?.size || 0) >= MIN_DEGREE) break;
+      addEdge(node.id, candidate.id, { force: true });
+    }
+  }
+
+  const buildComponents = () => {
+    const seen = new Set();
+    const components = [];
+    for (const node of nodes) {
+      if (seen.has(node.id)) continue;
+      const queue = [node.id];
+      const component = [];
+      seen.add(node.id);
+      while (queue.length) {
+        const current = queue.shift();
+        component.push(current);
+        for (const next of adjacency.get(current) || []) {
+          if (seen.has(next)) continue;
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+      components.push(component);
+    }
+    return components;
+  };
+
+  let components = buildComponents();
+  while (components.length > 1) {
+    const detached = components.pop();
+    const anchor = components[0];
+    const from = detached[Math.floor(Math.random() * detached.length)];
+    const to = anchor[Math.floor(Math.random() * anchor.length)];
+    if (!addEdge(from, to, { force: true })) {
+      break;
+    }
+    components = buildComponents();
+  }
+
+  return { width, height, nodes, edges };
+}
+
+function buildGraph(map) {
+  const nodes = new Map();
+  if (!map?.nodes) return nodes;
+  for (const node of map.nodes) {
+    nodes.set(node.id, { ...node, neighbors: new Set() });
+  }
+  for (const [a, b] of map.edges || []) {
+    nodes.get(a)?.neighbors.add(b);
+    nodes.get(b)?.neighbors.add(a);
+  }
+  return nodes;
+}
+
+function generateDestinations(map) {
+  if (!map?.nodes?.length) return [];
+  const styles = shuffle(DESTINATION_THEMES);
+  const spots = shuffle(map.nodes.slice());
+  const count = Math.min(styles.length, Math.max(6, Math.floor(map.nodes.length / 3)));
+  const result = [];
+  for (let i = 0; i < count; i += 1) {
+    const node = spots[i % spots.length];
+    const style = styles[i % styles.length];
+    result.push({ node: node.id, label: style.label, color: style.color, icon: style.icon });
+  }
+  return result;
+}
+
+function setMap(map, destinations) {
+  const nextMap = {
+    width: map?.width || MAP_BOUNDS.width,
+    height: map?.height || MAP_BOUNDS.height,
+    nodes: Array.isArray(map?.nodes) ? map.nodes.slice() : [],
+    edges: Array.isArray(map?.edges) ? map.edges.map((edge) => edge.slice()) : [],
+  };
+  state.map = nextMap;
+  state.graph = buildGraph(nextMap);
+  const points = Array.isArray(destinations) && destinations.length ? destinations : generateDestinations(nextMap);
+  state.destinations = points.map((point) => ({ ...point }));
+  resizeCanvas();
+}
+
+function createRoundLayout() {
+  const map = generateCityMap();
+  const destinations = generateDestinations(map);
+  return { map, destinations };
+}
+
+function nodeById(id) {
+  return state.graph?.get(id) || null;
+}
+
+function distance(a, b) {
+  return Math.hypot((a?.x || 0) - (b?.x || 0), (a?.y || 0) - (b?.y || 0));
+}
+
+function findNearestNode(x, y, maxDistance = Infinity) {
+  let closest = null;
+  let best = maxDistance;
+  for (const node of state.map.nodes) {
+    const d = distance({ x, y }, node);
+    if (d <= best) {
+      best = d;
+      closest = node;
+    }
+  }
+  return closest;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function mixChannel(channel, factor, lighten = true) {
+  return lighten
+    ? Math.round(channel + (255 - channel) * factor)
+    : Math.round(channel * (1 - factor));
+}
+
+function adjustColor(hex, factor, lighten = true) {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return hex;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  const f = clamp(factor, 0, 1);
+  const nr = mixChannel(r, f, lighten);
+  const ng = mixChannel(g, f, lighten);
+  const nb = mixChannel(b, f, lighten);
+  return `#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb
+    .toString(16)
+    .padStart(2, '0')}`;
+}
+
+function lightenColor(hex, factor = 0.2) {
+  return adjustColor(hex, factor, true);
+}
+
+function darkenColor(hex, factor = 0.2) {
+  return adjustColor(hex, factor, false);
+}
+
+function resizeCanvas() {
+  if (!elements.board) return;
+  const rect = elements.board.getBoundingClientRect();
+  const availableWidth = rect.width;
+  const availableHeight = rect.height;
+  if (!availableWidth || !availableHeight) {
+    return;
+  }
+  const ratio = window.devicePixelRatio || 1;
+  const mapWidth = state.map?.width || MAP_BOUNDS.width;
+  const mapHeight = state.map?.height || MAP_BOUNDS.height;
+  const scale = Math.min(availableWidth / mapWidth, availableHeight / mapHeight);
+  const displayWidth = Math.max(mapWidth * scale, 1);
+  const displayHeight = Math.max(mapHeight * scale, 1);
+  elements.canvas.style.width = `${displayWidth}px`;
+  elements.canvas.style.height = `${displayHeight}px`;
+  elements.canvas.width = Math.max(1, Math.round(displayWidth * ratio));
+  elements.canvas.height = Math.max(1, Math.round(displayHeight * ratio));
+  view.scale = scale;
+  view.pixelScale = scale * ratio;
+}
+
+function loadPreferences() {
+  const defaults = {
+    playerName: 'Игрок',
+    showNodes: false,
+  };
+  try {
+    const storage = typeof window !== 'undefined' ? window.localStorage : null;
+    const storedName = storage?.getItem('trafficity.playerName');
+    if (storedName && storedName.trim().length) {
+      state.preferences.playerName = storedName.trim();
+    } else {
+      state.preferences.playerName = defaults.playerName;
+    }
+    const storedNodes = storage?.getItem('trafficity.showNodes');
+    if (typeof storedNodes === 'string') {
+      state.preferences.showNodes = storedNodes === 'true';
+    } else {
+      state.preferences.showNodes = defaults.showNodes;
+    }
+  } catch (err) {
+    state.preferences.playerName = defaults.playerName;
+    state.preferences.showNodes = defaults.showNodes;
+  }
+  if (elements.prefPlayerName) {
+    elements.prefPlayerName.value = state.preferences.playerName;
+  }
+  if (elements.prefShowNodes) {
+    elements.prefShowNodes.checked = state.preferences.showNodes;
+  }
+}
+
+function shortestPath(start, goal) {
+  const graph = state.graph;
+  if (!graph?.size) return null;
+  if (start === goal) return [start];
+  const queue = [start];
+  const visited = new Set([start]);
+  const prev = new Map();
+  while (queue.length) {
+    const current = queue.shift();
+    if (current === goal) break;
+    for (const next of graph.get(current)?.neighbors || []) {
+      if (visited.has(next)) continue;
+      visited.add(next);
+      prev.set(next, current);
+      queue.push(next);
+    }
+  }
+  if (!prev.has(goal) && start !== goal) return null;
+  const path = [];
+  let cur = goal;
+  while (cur !== undefined) {
+    path.unshift(cur);
+    cur = prev.get(cur);
+  }
+  return path;
+}
+
+function randomDestination(exclude) {
+  const pool = state.destinations.length ? state.destinations : generateDestinations(state.map);
+  const candidates = pool.filter((d) => d.node !== exclude);
+  const source = candidates.length ? candidates : pool;
+  if (!source.length) {
+    const fallback = state.map.nodes[0];
+    return fallback
+      ? { node: fallback.id, label: 'Финиш', color: '#ffd6a5', icon: '🏁' }
+      : { node: exclude, label: 'Финиш', color: '#ffd6a5', icon: '🏁' };
+  }
+  return source[Math.floor(Math.random() * source.length)];
+}
+
+function createPlayer(id, name, type, color) {
+  return {
+    id,
+    name,
+    type,
+    color,
+    deliveries: 0,
+    score: 0,
+  };
+}
+
+function createVehicle(player, index, startNode) {
+  const starting = startNode || state.map.nodes[0]?.id;
+  const dest = randomDestination(starting);
+  return {
+    id: `${player.id}-${index + 1}`,
+    label: `${player.name} ${VEHICLE_EMOJIS[index] || index + 1}`,
+    ownerId: player.id,
+    order: index + 1,
+    color: player.color,
+    current: starting,
+    goal: dest.node,
+    goalInfo: dest,
+    route: [],
+    waiting: 0,
+    stopOrders: {},
+    stepsTaken: 0,
+    history: [],
+  };
+}
+
+function startSoloGame() {
+  const layout = createRoundLayout();
+  resetState(layout);
+  const displayName = (state.preferences.playerName || '').trim() || 'Вы';
+  const human = createPlayer('player', displayName, 'human', PLAYER_COLORS[0]);
+  const ai = createPlayer('ai', 'Автопилот', 'ai', PLAYER_COLORS[1]);
+  state.players = [human, ai];
+  state.localPlayerId = human.id;
+  state.activePlayer = human.id;
+  assignVehicles();
+  autoPlanForAI();
+  selectDefaultVehicle(human.id);
+  setHint('Нажмите на машину и протяните линию по узлам до цели.');
+  state.mode = 'solo';
+  state.running = true;
+  elements.btnAdvance.disabled = false;
+  updateUI();
+}
+
+function startLocalGame(names) {
+  const layout = createRoundLayout();
+  resetState(layout);
+  state.players = names.map((name, idx) =>
+    createPlayer(
+      `p${idx + 1}`,
+      (name && name.trim().length ? name.trim() : `Игрок ${idx + 1}`),
+      'human',
+      PLAYER_COLORS[idx % PLAYER_COLORS.length]
+    )
+  );
+  state.localPlayerId = state.players[0].id;
+  state.activePlayer = null;
+  assignVehicles();
+  selectDefaultVehicle(state.localPlayerId);
+  setHint('Игроки тянут маршруты машин и ставят стопы, затем нажимают «Следующий ход».');
+  state.mode = 'local';
+  state.running = true;
+  elements.btnAdvance.disabled = false;
+  updateUI();
+}
+
+function startOnlineGame(config) {
+  resetState();
+  state.mode = 'online';
+  const { name, action, room } = config;
+  const socket = new WebSocket(ONLINE_WS);
+  state.online = { socket, action, roomCode: room, name };
+  state.roomCode = room;
+  state.activePlayer = null;
+  setHint('Соединяемся с irgri.uk...');
+  socket.addEventListener('open', () => {
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        payload: { name, action, room },
+      })
+    );
+  });
+  socket.addEventListener('message', handleOnlineMessage);
+  socket.addEventListener('close', () => {
+    logEvent('Соединение закрыто.');
+    setHint('Соединение потеряно.');
+    state.running = false;
+    elements.btnAdvance.disabled = true;
+  });
+}
+
+function resetState(layout) {
+  if (layout?.map) {
+    setMap(layout.map, layout.destinations);
+  } else if (!state.map.nodes.length) {
+    setMap(generateCityMap());
+  }
+  state.running = false;
+  state.players = [];
+  state.vehicles = [];
+  state.selectedVehicleId = null;
+  state.turn = 0;
+  state.turnLimit = TURN_LIMIT;
+  state.log = [];
+  state.hint = '';
+  state.localPlayerId = null;
+  state.online = null;
+  state.activePlayer = null;
+  state.showNodes = !!state.preferences.showNodes;
+  state.roomCode = null;
+  state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+  const stopAmount = Number(elements.stopAmount?.value) || 1;
+  state.stopDrag = { active: false, vehicleId: null, amount: stopAmount, hoverNode: null };
+  elements.log.innerHTML = '';
+  elements.btnToggleNodes.textContent = state.showNodes ? 'Скрыть узлы' : 'Показать узлы';
+  elements.stopHandle.disabled = true;
+  updateHint();
+}
+
+function pickStartingPairs(playerCount) {
+  const graph = state.graph;
+  const eligible = state.map.nodes.filter((node) => (graph.get(node.id)?.neighbors.size || 0) >= 2);
+  const pool = eligible.length >= playerCount * 2 ? eligible : state.map.nodes;
+  const picks = shuffle(pool);
+  const pairs = [];
+  let index = 0;
+  for (let i = 0; i < playerCount; i += 1) {
+    const first = picks[index % picks.length];
+    index += 1;
+    let second = picks[index % picks.length];
+    index += 1;
+    if (!second || second.id === first.id) {
+      second = pool.find((node) => node.id !== first.id) || first;
+    }
+    pairs.push([first.id, second.id]);
+  }
+  return pairs;
+}
+
+function assignVehicles() {
+  state.vehicles = [];
+  const pairs = pickStartingPairs(state.players.length);
+  state.players.forEach((player, idx) => {
+    const pair = pairs[idx] || [];
+    pair.forEach((startNode, vehicleIdx) => {
+      const vehicle = createVehicle(player, vehicleIdx, startNode);
+      state.vehicles.push(vehicle);
+    });
+  });
+}
+
+function autoPlanForAI() {
+  for (const vehicle of state.vehicles) {
+    const owner = state.players.find((p) => p.id === vehicle.ownerId);
+    if (owner?.type === 'ai') {
+      planShortestRoute(vehicle);
+    }
+  }
+}
+
+function planShortestRoute(vehicle) {
+  const path = shortestPath(vehicle.current, vehicle.goal);
+  if (path && path.length > 1) {
+    vehicle.route = path.slice(1);
+    vehicle.history = path.slice();
+  }
+}
+
+function setHint(text) {
+  const message = text && text.length ? text : defaultHint();
+  state.hint = message;
+  updateHint();
+}
+
+function defaultHint() {
+  if (!state.running) return 'Выберите режим, чтобы начать новую партию.';
+  if (state.mode === 'solo') return 'Зажмите машину и протяните маршрут по узлам до цели.';
+  if (state.mode === 'local') return 'Игроки ведут линии от своих машин и перетаскивают стопы на узлы.';
+  if (state.mode === 'online') return 'Планируйте маршрут машин и ждите свой ход — сервер irgri.uk синхронизирует партии.';
+  return '';
+}
+
+function updateHint() {
+  elements.hint.textContent = state.hint;
+}
+
+function updateTurnLabel() {
+  elements.turnLabel.textContent = `${state.turn} / ${state.turnLimit}`;
+}
+
+function logEvent(text) {
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.textContent = text;
+  elements.log.prepend(entry);
+  while (elements.log.children.length > 40) {
+    elements.log.removeChild(elements.log.lastChild);
+  }
+}
+
+function updateUI() {
+  updateTurnLabel();
+  renderVehicleList();
+  renderScores();
+  updateHint();
+  updateActionButtons();
+  updateActivePlayerLabel();
+}
+
+function updateActivePlayerLabel() {
+  let text = 'Режим ожидания';
+  if (!state.running) {
+    elements.activePlayerLabel.textContent = text;
+    return;
+  }
+  if (state.mode === 'solo') {
+    text = 'Вы против автопилота';
+  } else if (state.mode === 'local') {
+    const count = state.players.length;
+    const suffix = count === 1 ? 'игрок' : count >= 2 && count <= 4 ? 'игрока' : 'игроков';
+    text = `Играют ${count} ${suffix}`;
+  } else if (state.mode === 'online') {
+    if (state.activePlayer) {
+      const player = state.players.find((p) => p.id === state.activePlayer);
+      text = player ? `Ходит: ${player.name}` : 'Ожидание хода';
+    } else {
+      text = 'Ожидаем игроков';
+    }
+  }
+  elements.activePlayerLabel.textContent = text;
+}
+
+function renderScores() {
+  const container = elements.scorePlayers;
+  container.innerHTML = '';
+  state.players.forEach((player) => {
+    const card = document.createElement('div');
+    card.className = 'score';
+    card.style.borderTop = `4px solid ${player.color}`;
+    card.innerHTML = `
+      <span class="label">${player.name}</span>
+      <strong>${player.deliveries} доставок</strong>
+      <span class="cash">${player.score} очков</span>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function renderVehicleList() {
+  elements.vehicleList.innerHTML = '';
+  for (const vehicle of state.vehicles) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'vehicle-card';
+    if (vehicle.id === state.selectedVehicleId) {
+      card.classList.add('active');
+    }
+    const owner = state.players.find((p) => p.id === vehicle.ownerId);
+    const avatar = document.createElement('div');
+    avatar.className = 'vehicle-avatar';
+    avatar.style.background = owner?.color || '#ccc';
+    avatar.textContent = VEHICLE_EMOJIS[(vehicle.order - 1) % VEHICLE_EMOJIS.length] || vehicle.order;
+    const info = document.createElement('div');
+    info.className = 'vehicle-info';
+    info.innerHTML = `
+      <strong>${owner?.name || 'Игрок'} — №${vehicle.order}</strong>
+      <span>Точка: ${vehicle.goalInfo?.label || vehicle.goal}</span>
+    `;
+    const status = document.createElement('div');
+    status.className = 'vehicle-status';
+    const stops = vehicle.stopOrders || {};
+    let statusText = 'Ожидает';
+    if (vehicle.waiting > 0) {
+      statusText = `Стоит ${vehicle.waiting}`;
+    } else if (stops[vehicle.current]) {
+      statusText = `Стоп ${stops[vehicle.current]} ход(ов)`;
+    } else if (Object.keys(stops).length) {
+      const [nextNode, amount] = Object.entries(stops)[0];
+      statusText = `Стоп ${amount} на ${nextNode}`;
+    } else if (vehicle.route.length) {
+      statusText = `${vehicle.route.length} узлов`;
+    }
+    status.textContent = statusText;
+    card.append(avatar, info, status);
+    const controllable = canControlVehicle(vehicle);
+    if (!controllable) {
+      card.classList.add('readonly');
+    }
+    card.disabled = false;
+    card.addEventListener('click', () => {
+      state.selectedVehicleId = vehicle.id;
+      updateActionButtons();
+      renderVehicleList();
+      highlightVehicle(vehicle);
+    });
+    elements.vehicleList.appendChild(card);
+  }
+}
+
+function selectDefaultVehicle(ownerId) {
+  if (!ownerId) return;
+  const candidate = state.vehicles.find((v) => v.ownerId === ownerId);
+  if (candidate) {
+    state.selectedVehicleId = candidate.id;
+  }
+}
+
+function highlightVehicle(vehicle) {
+  const target = vehicle.goalInfo?.label || vehicle.goal;
+  setHint(`Машина №${vehicle.order}. Цель: ${target}.`);
+}
+
+function updateActionButtons() {
+  const vehicle = getSelectedVehicle();
+  const canControl = vehicle && canControlVehicle(vehicle);
+  elements.stopHandle.disabled = !canControl;
+}
+
+function canControlVehicle(vehicle) {
+  if (!vehicle) return false;
+  const owner = state.players.find((p) => p.id === vehicle.ownerId);
+  if (!owner) return false;
+  if (state.mode === 'solo') {
+    return owner.type === 'human';
+  }
+  if (state.mode === 'local') {
     return true;
   }
-  // Разрешает ли проезд по направлению edgeDir ("a->b" или "b->a") относительно узла
-  // Упрощение: разбиваем исходящие на 2 группы по угловому сектору
+  if (state.mode === 'online') {
+    return owner.id === state.localPlayerId;
+  }
+  return false;
 }
 
-class Graph {
-  constructor() {
-    this.nodes = [];
-    this.edges = new Map(); // key -> Edge
-  }
-  addNode(x, y) {
-    const n = new Node(this.nodes.length, x, y);
-    this.nodes.push(n);
-    return n;
-  }
-  connect(aId, bId) {
-    if (aId === bId) return;
-    const key = Edge.key(aId, bId);
-    if (this.edges.has(key)) return;
-    this.nodes[aId].neighbors.add(bId);
-    this.nodes[bId].neighbors.add(aId);
-    this.edges.set(key, new Edge(aId, bId));
-  }
-  edge(a, b) { return this.edges.get(Edge.key(a, b)); }
+function getSelectedVehicle() {
+  return state.vehicles.find((v) => v.id === state.selectedVehicleId) || null;
 }
 
-// -------------------- Машины --------------------
-class Car {
-  constructor(id, owner, nodeId) {
-    this.id = id;
-    this.owner = owner; // 'player' | 'npc'
-    this.nodeId = nodeId;
-    this.route = []; // список nodeId, включая текущий как первый
-    this.routeIndex = 0;
-    this.wait = 0; // запланированные ожидания на текущем узле
-    this.crashHold = 0; // простой после ДТП
-    this.totalRouteLen = 0; // L
-    this.travelTime = 0; // T
-    this.targetId = null; // B
-    this.readyToMoveEdge = null; // номер следующего узла для визуала
-    this.lastPlannedLenPaid = 0; // сколько ребер оплачено последней правкой
-    this.blockingPenalty = 0; // накоплено за блокировку
-    this.predictedPath = null; // для NPC preview
+function advanceTurn() {
+  if (state.mode === 'online') {
+    const kind = state.running ? 'advance' : 'start';
+    sendOnlineUpdate({ type: kind });
+    elements.btnAdvance.disabled = true;
+    return;
   }
-  atTarget() { return this.nodeId === this.targetId; }
+  if (!state.running) return;
+  state.turn += 1;
+  for (const vehicle of state.vehicles) {
+    processVehicleTurn(vehicle);
+  }
+  if (state.mode === 'solo') {
+    autoPlanForAI();
+  }
+  logEndOfTurn();
+  updateUI();
+  checkEndGame();
 }
 
-// -------------------- Игра --------------------
-class Game {
-  constructor(canvas) {
-    this.cv = canvas;
-    this.ctx = canvas.getContext('2d');
-    this.w = canvas.width; this.h = canvas.height;
+elements.btnAdvance.addEventListener('click', advanceTurn);
 
-    // Настройки
-    this.turn = 1; this.turnLimit = 30;
-    this.money = 0; this.trips = 0; this.penalties = 0;
-    this.rules = {
-      basePay: 100,
-      perEdge: 5,
-      speedBonusCap: 20,
-      speedBonusPer: 2,
-      cleanMult: 1.2,
-      fineCrash: 100,
-      fineRed: 30,
-      fineBlock: 10,
-      lightManualCostBase: 10,
-      lightManualWindow: 10,
-      oneWayCost: 15,
-      oneWayTTL: 3,
-      oneWayCD: 5,
-      routeBaseRecalc: 5,
-      routePerEdge: 1,
-      autoCycle: 3,
-      npcSpawnRate: 0.04, // * Nnodes per turn
-      npcMaxFactor: 0.5
-    };
+elements.btnToggleNodes.addEventListener('click', () => {
+  state.showNodes = !state.showNodes;
+  elements.btnToggleNodes.textContent = state.showNodes ? 'Скрыть узлы' : 'Показать узлы';
+});
 
-    this.seed = Math.floor(Math.random()*1e9);
-    this.random = Math.random;
-    this.graph = new Graph();
-    this.cars = [];
-    this.playerCars = [];
-    this.npcCars = [];
-    this.intersections = []; // nodeIds with lights
-    this.manualCostsBump = new Map(); // nodeId -> count within window
+elements.stopAmount.addEventListener('input', () => {
+  elements.stopAmountLabel.textContent = elements.stopAmount.value;
+  state.stopDrag.amount = Number(elements.stopAmount.value) || 1;
+});
 
-    this.actionsQueued = []; // применяются через 1 ход
-    this.tool = 'route'; // route | light | oneway | wait
-    this.hover = {nodeId: null, edge: null, carId: null};
+loadPreferences();
+setupModeSelection();
+setupCanvasInteractions();
+setupStopDrag();
+if (typeof ResizeObserver !== 'undefined' && elements.board) {
+  const observer = new ResizeObserver(() => resizeCanvas());
+  observer.observe(elements.board);
+} else {
+  window.addEventListener('resize', resizeCanvas);
+}
+window.addEventListener('orientationchange', () => {
+  window.setTimeout(resizeCanvas, 120);
+});
+resizeCanvas();
+renderLoop();
+updateUI();
 
-    // UI refs
-    this.turnEl = document.getElementById('turn');
-    this.turnLimitEl = document.getElementById('turnLimit');
-    this.moneyEl = document.getElementById('money');
-    this.tripsEl = document.getElementById('trips');
-    this.penaltiesEl = document.getElementById('penalties');
+function setupStopDrag() {
+  elements.stopHandle.addEventListener('dragstart', handleStopDragStart);
+  elements.stopHandle.addEventListener('dragend', handleStopDragEnd);
+  elements.canvas.addEventListener('dragover', handleCanvasDragOver);
+  elements.canvas.addEventListener('dragleave', handleCanvasDragLeave);
+  elements.canvas.addEventListener('drop', handleCanvasDrop);
+}
 
-    this._bindUI();
-    this._genMap();
-    this._spawnPlayer();
-    this._assignTargets();
-
-    this._loop();
+function handleStopDragStart(event) {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle || !canControlVehicle(vehicle)) {
+    event.preventDefault();
+    return;
   }
+  const amount = Number(elements.stopAmount.value) || 1;
+  state.stopDrag = { active: true, vehicleId: vehicle.id, amount, hoverNode: null };
+  event.dataTransfer.setData('text/plain', 'stop');
+  event.dataTransfer.effectAllowed = 'copy';
+  setHint(`Перетащите стоп на узел для ${vehicle.label}.`);
+}
 
-  _bindUI() {
-    const toolRoute = document.getElementById('toolRoute');
-    const toolLight = document.getElementById('toolLight');
-    const toolOneWay = document.getElementById('toolOneWay');
-    const toolWait = document.getElementById('toolWait');
-    const btnEndTurn = document.getElementById('btnEndTurn');
-    const btnRecalc = document.getElementById('btnRecalc');
-    const btnNewSeed = document.getElementById('btnNewSeed');
+function handleStopDragEnd() {
+  state.stopDrag.hoverNode = null;
+  state.stopDrag.active = false;
+  state.stopDrag.vehicleId = null;
+  state.stopDrag.amount = Number(elements.stopAmount.value) || 1;
+  updateHint();
+}
 
-    const setTool = (t)=>{
-      this.tool = t;
-      [toolRoute,toolLight,toolOneWay,toolWait].forEach(b=>b.classList.remove('active'));
-      if(t==='route') toolRoute.classList.add('active');
-      if(t==='light') toolLight.classList.add('active');
-      if(t==='oneway') toolOneWay.classList.add('active');
-      if(t==='wait') toolWait.classList.add('active');
-    };
-
-    toolRoute.onclick = ()=> setTool('route');
-    toolLight.onclick = ()=> setTool('light');
-    toolOneWay.onclick = ()=> setTool('oneway');
-    toolWait.onclick = ()=> setTool('wait');
-    btnEndTurn.onclick = ()=> this.endTurn();
-    btnRecalc.onclick = ()=> this.recalcPlayerRoutes();
-    btnNewSeed.onclick = ()=> { this.newMap(); };
-
-    this.cv.addEventListener('mousemove', (e)=>{
-      const p = this._canvasToWorld(e.offsetX, e.offsetY);
-      this._updateHover(p.x, p.y);
-    });
-    this.cv.addEventListener('mouseleave', ()=>{ this.hover = {nodeId:null,edge:null,carId:null}; });
-    this.cv.addEventListener('click', (e)=>{
-      const p = this._canvasToWorld(e.offsetX, e.offsetY);
-      this._handleClick(p.x, p.y);
-    });
+function handleCanvasDragOver(event) {
+  if (!state.stopDrag.active) return;
+  event.preventDefault();
+  const { x, y } = getCanvasCoordinates(event);
+  const nearest = findNearestNode(x, y, 40);
+  state.stopDrag.hoverNode = nearest ? nearest.id : null;
+  if (nearest) {
+    event.dataTransfer.dropEffect = 'copy';
+    setHint(`Стоп на узле ${nearest.id}. Отпустите, чтобы применить.`);
+  } else {
+    setHint('Перетащите жетон на узел дороги.');
   }
+}
 
-  newMap() {
-    this.turn = 1; this.money = 0; this.trips = 0; this.penalties = 0;
-    this.graph = new Graph();
-    this.cars = []; this.playerCars = []; this.npcCars = [];
-    this.intersections = [];
-    this.manualCostsBump = new Map();
-    this.actionsQueued = [];
-    this.seed = Math.floor(Math.random()*1e9);
-    this._genMap();
-    this._spawnPlayer();
-    this._assignTargets();
+function handleCanvasDragLeave() {
+  if (!state.stopDrag.active) return;
+  state.stopDrag.hoverNode = null;
+  updateHint();
+}
+
+function handleCanvasDrop(event) {
+  if (!state.stopDrag.active) return;
+  event.preventDefault();
+  const { hoverNode, vehicleId, amount } = state.stopDrag;
+  const vehicle = state.vehicles.find((v) => v.id === vehicleId);
+  if (!vehicle || !canControlVehicle(vehicle)) {
+    handleStopDragEnd();
+    return;
   }
+  let nodeId = hoverNode;
+  if (!nodeId) {
+    const { x, y } = getCanvasCoordinates(event);
+    const nearest = findNearestNode(x, y, 40);
+    nodeId = nearest?.id || null;
+  }
+  if (!nodeId) {
+    setHint('Стоп можно ставить только на узлах.');
+    handleStopDragEnd();
+    return;
+  }
+  applyStopOrder(vehicle, nodeId, amount);
+  handleStopDragEnd();
+}
 
-  _genMap() {
-    // Генерируем узлы на мягкой сетке и соединяем, чтобы получился плотный, связный граф
-    const cols = 14, rows = 10;
-    const margin = 60;
-    const cellW = (this.w - margin*2) / (cols-1);
-    const cellH = (this.h - margin*2) / (rows-1);
-    for (let y=0;y<rows;y++) {
-      for (let x=0;x<cols;x++) {
-        const jitterX = (Math.random()-0.5)*cellW*0.25;
-        const jitterY = (Math.random()-0.5)*cellH*0.25;
-        this.graph.addNode(margin + x*cellW + jitterX, margin + y*cellH + jitterY);
-      }
+function setupCanvasInteractions() {
+  elements.canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+  elements.canvas.addEventListener('pointermove', handleCanvasPointerMove);
+  elements.canvas.addEventListener('pointerup', handleCanvasPointerUp);
+  elements.canvas.addEventListener('pointerleave', handleCanvasPointerLeave);
+}
+
+function handleCanvasPointerDown(event) {
+  const coords = getCanvasCoordinates(event);
+  const vehicle = hitVehicle(coords.x, coords.y);
+  if (vehicle) {
+    const wasSelected = state.selectedVehicleId === vehicle.id;
+    if (!wasSelected) {
+      state.selectedVehicleId = vehicle.id;
+      renderVehicleList();
+      updateActionButtons();
     }
-
-    // Соединяем соседей с вероятностью, затем усиливаем связность
-    const idx = (x,y)=> y*cols+x;
-    for (let y=0;y<rows;y++) {
-      for (let x=0;x<cols;x++) {
-        const id = idx(x,y);
-        const right = x+1<cols ? idx(x+1,y) : -1;
-        const down = y+1<rows ? idx(x,y+1) : -1;
-        const diag = (x+1<cols && y+1<rows) ? idx(x+1,y+1) : -1;
-        if (right>=0 && Math.random()<0.85) this.graph.connect(id,right);
-        if (down>=0 && Math.random()<0.85) this.graph.connect(id,down);
-        if (diag>=0 && Math.random()<0.3) this.graph.connect(id,diag);
-      }
+    highlightVehicle(vehicle);
+    if (canControlVehicle(vehicle)) {
+      startRouteDrag(event.pointerId, vehicle);
+      elements.canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
     }
-    // Добавим случайных мостиков
-    const N = this.graph.nodes.length;
-    for (let k=0;k<Math.floor(N*0.2);k++) {
-      const a = randInt(0,N-1), b = randInt(0,N-1);
-      if (dist(this.graph.nodes[a], this.graph.nodes[b]) < 80) continue;
-      this.graph.connect(a,b);
-    }
-
-    // Светофоры на узлах степени >=3
-    for (const n of this.graph.nodes) {
-      if (n.neighbors.size >= 3) {
-        n.light = new TrafficLight(n.id);
-        n.light.autoCycle = this.rules.autoCycle;
-        this.intersections.push(n.id);
-      }
-    }
+    return;
   }
-
-  _spawnPlayer() {
-    // Две машины игрока на произвольных узлах
-    const spawns = [...Array(2)].map(()=> randInt(0, this.graph.nodes.length-1));
-    spawns.forEach((nid, i)=>{
-      const car = new Car(`P${i}`, 'player', nid);
-      car.route = [nid];
-      car.routeIndex = 0;
-      this.cars.push(car);
-      this.playerCars.push(car);
-    });
-  }
-
-  _assignTargets() {
-    // Для каждой машины игрока определить цель
-    for (const car of this.playerCars) {
-      car.targetId = this._randomFarNode(car.nodeId, 6, 18);
-      car.totalRouteLen = 0;
-      car.travelTime = 0;
-      car.lastPlannedLenPaid = 0;
-    }
-  }
-
-  _randomFarNode(from, minL, maxL) {
-    // Выбираем узел, у которого эвклидово расстояние в верхнем квартиле
-    const candidates = this.graph.nodes
-      .map(n=>({id:n.id, d: dist(this.graph.nodes[from], n)}))
-      .sort((a,b)=> b.d-a.d)
-      .slice(0, Math.max(6, Math.floor(this.graph.nodes.length*0.2)));
-    return candidates[randInt(0, candidates.length-1)].id;
-  }
-
-  _updateHUD() {
-    this.turnEl.textContent = this.turn;
-    this.turnLimitEl.textContent = this.turnLimit;
-    this.moneyEl.textContent = Math.floor(this.money);
-    this.tripsEl.textContent = this.trips;
-    this.penaltiesEl.textContent = Math.floor(this.penalties);
-  }
-
-  // -------------------- Вход и действия --------------------
-  _canvasToWorld(x, y) { return {x, y}; }
-
-  _nearestNode(x, y, maxDist=18) {
-    let best = null, bd = maxDist;
-    for (const n of this.graph.nodes) {
-      const d = Math.hypot(n.x-x, n.y-y);
-      if (d < bd) { bd = d; best = n; }
-    }
-    return best;
-  }
-
-  _findEdgeNear(x, y, maxDist=8) {
-    // Вернем ближайшее ребро как [a,b] если точка близко к отрезку
-    let best = null, bd = maxDist;
-    for (const e of this.graph.edges.values()) {
-      const A = this.graph.nodes[e.a], B = this.graph.nodes[e.b];
-      const d = pointSegDist(x,y, A.x,A.y, B.x,B.y);
-      if (d<bd) { bd=d; best=[e.a,e.b]; }
-    }
-    return best;
-    function pointSegDist(px,py, x1,y1, x2,y2){
-      const vx=x2-x1, vy=y2-y1;
-      const wx=px-x1, wy=py-y1;
-      const t = clamp((vx*wx + vy*wy)/(vx*vx+vy*vy), 0,1);
-      const cx = x1 + vx*t, cy = y1 + vy*t;
-      return Math.hypot(px-cx, py-cy);
-    }
-  }
-
-  _updateHover(x, y) {
-    const node = this._nearestNode(x,y, 14);
-    const edge = this._findEdgeNear(x,y, 8);
-    // Кар
-    let carId = null, cd = 12;
-    for (const car of this.cars) {
-      const n = this.graph.nodes[car.nodeId];
-      const d = Math.hypot(n.x-x, n.y-y);
-      if (d < cd) { cd = d; carId = car.id; }
-    }
-    this.hover = {nodeId: node?node.id:null, edge, carId};
-  }
-
-  _handleClick(x, y) {
-    if (this.tool === 'light') {
-      // Переключение светофора
-      const node = this._nearestNode(x,y, 14);
-      if (node && node.light) {
-        const cost = this._lightManualCost(node.id);
-        if (this.money >= cost && node.light.cooldown===0) {
-          // Очередь на применение через 1 ход
-          this.money -= cost;
-          this._bumpManualCost(node.id);
-          this.actionsQueued.push({type:'switchLight', nodeId: node.id});
-        }
-      }
+  const nearest = findNearestNode(coords.x, coords.y, 28);
+  if (!nearest) return;
+  const selected = getSelectedVehicle();
+  if (selected && canControlVehicle(selected)) {
+    const started = startRouteDragFromNode(event.pointerId, selected, nearest.id);
+    if (started) {
+      elements.canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
       return;
     }
-    if (this.tool === 'oneway') {
-      const e = this._findEdgeNear(x,y, 8);
-      if (e) {
-        const edge = this.graph.edge(e[0],e[1]);
-        if (edge.cd<=0 && this.money>=this.rules.oneWayCost) {
-          this.money -= this.rules.oneWayCost;
-          this.actionsQueued.push({type:'oneway', a:e[0], b:e[1]});
-        }
-      }
-      return;
-    }
-    if (this.tool === 'wait') {
-      const node = this._nearestNode(x,y, 14);
-      if (node) {
-        // попробуем найти машину игрока, у которой в маршруте есть этот узел
-        const car = this.playerCars[0]; // одна машина для простоты выбора
-        const idx = car.route.indexOf(node.id);
-        if (idx>=0) {
-          const v = prompt("Сколько ходов ждать на этом узле? (0..3)", "1");
-          if (v!=null) {
-            const w = clamp(parseInt(v)||0, 0, 3);
-            // Сохраняем как «точечное» ожидание: создадим карту ожиданий
-            if (!car.waitMap) car.waitMap = new Map();
-            car.waitMap.set(node.id, w);
-            // применение через 1 ход не требуется — ожидание вступит при проходе узла
-          }
-        }
-      }
-      return;
-    }
-    // route
-    const node = this._nearestNode(x,y, 14);
-    if (node) {
-      // редактируем маршрут первой машины игрока
-      const car = this.playerCars[0];
-      // если клик по соседу последнего, добавим
-      const last = car.route[car.route.length-1];
-      if (car.route.length===1 && last===car.nodeId && this.graph.nodes[car.nodeId].neighbors.has(node.id)) {
-        car.route.push(node.id);
-      } else {
-        const lastNode = this.graph.nodes[last];
-        if (lastNode && lastNode.neighbors.has(node.id)) {
-          car.route.push(node.id);
-        } else {
-          // если клик по текущему — сбросим хвост до него
-          const idx = car.route.indexOf(node.id);
-          if (idx>=0) car.route = car.route.slice(0, idx+1);
-        }
-      }
-      // Стоимость правки: берем число измененных ребер по сравнению с последней оплатой
-      const changed = Math.max(0, car.route.length-1 - car.lastPlannedLenPaid);
-      const cost = this.rules.routeBaseRecalc + changed*this.rules.routePerEdge;
-      if (cost>0) {
-        if (this.money >= cost) {
-          this.money -= cost;
-          car.lastPlannedLenPaid = car.route.length-1;
-        } else {
-          // откатим последнее изменение
-          car.route.pop();
-          alert("Недостаточно денег для правки маршрута.");
-        }
+  }
+  selectVehicleFromMap(nearest.id);
+}
+
+function handleCanvasPointerMove(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  const coords = getCanvasCoordinates(event);
+  updateRouteDrag(coords.x, coords.y);
+}
+
+function handleCanvasPointerUp(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  finishRouteDrag();
+  if (elements.canvas.hasPointerCapture(event.pointerId)) {
+    elements.canvas.releasePointerCapture(event.pointerId);
+  }
+}
+
+function handleCanvasPointerLeave(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  const coords = getCanvasCoordinates(event);
+  updateRouteDrag(coords.x, coords.y);
+}
+
+function getCanvasCoordinates(event) {
+  const rect = elements.canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return { x: 0, y: 0 };
+  }
+  const mapWidth = state.map?.width || MAP_BOUNDS.width;
+  const mapHeight = state.map?.height || MAP_BOUNDS.height;
+  const scaleX = mapWidth / rect.width;
+  const scaleY = mapHeight / rect.height;
+  const clientX = event.clientX ?? 0;
+  const clientY = event.clientY ?? 0;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+function hitVehicle(x, y) {
+  const radius = 30;
+  return state.vehicles.find((vehicle) => {
+    const node = nodeById(vehicle.current);
+    return distance({ x, y }, node) <= radius;
+  }) || null;
+}
+
+function buildVehiclePath(vehicle) {
+  const path = [vehicle.current];
+  if (Array.isArray(vehicle.route) && vehicle.route.length) {
+    for (const nodeId of vehicle.route) {
+      if (path[path.length - 1] !== nodeId) {
+        path.push(nodeId);
       }
     }
   }
+  return path;
+}
 
-  _lightManualCost(nodeId) {
-    // базовая 10₵, накапливаем удорожание если повтор в окне
-    const base = this.rules.lightManualCostBase;
-    // для простоты: если за последние 10 ходов переключали этот узел, +10 за каждый раз
-    const bumps = this.manualCostsBump.get(nodeId) || 0;
-    return base + 10*bumps;
+function startRouteDrag(pointerId, vehicle, initialPath = null) {
+  const base = Array.isArray(initialPath) && initialPath.length ? initialPath.slice() : [vehicle.current];
+  state.interaction = { active: true, type: 'route', vehicleId: vehicle.id, path: base, hoverNode: null, pointerId };
+  const origin = base[base.length - 1];
+  if (origin !== vehicle.current) {
+    setHint('Продолжайте маршрут от выбранного узла.');
+  } else {
+    setHint('Ведите маршрут по узлам. Можно закончить на любом из них.');
   }
-  _bumpManualCost(nodeId) {
-    const b = (this.manualCostsBump.get(nodeId) || 0) + 1;
-    this.manualCostsBump.set(nodeId, b);
-    // Через 10 ходов снимем 1
-    this.actionsQueued.push({type:'decBump', nodeId});
+}
+
+function startRouteDragFromNode(pointerId, vehicle, nodeId) {
+  if (!canControlVehicle(vehicle)) return false;
+  const path = buildVehiclePath(vehicle);
+  const index = path.indexOf(nodeId);
+  if (index === -1) return false;
+  const initial = path.slice(0, index + 1);
+  startRouteDrag(pointerId, vehicle, initial);
+  return true;
+}
+
+function selectVehicleFromMap(nodeId) {
+  if (!nodeId) return;
+  const occupant = state.vehicles.find((vehicle) => vehicle.current === nodeId);
+  if (!occupant) return;
+  if (state.selectedVehicleId !== occupant.id) {
+    state.selectedVehicleId = occupant.id;
+    renderVehicleList();
+    updateActionButtons();
   }
+  highlightVehicle(occupant);
+}
 
-  recalcPlayerRoutes() {
-    const car = this.playerCars[0];
-    // Находим путь A* до цели
-    if (car.targetId == null) return;
-    const path = this._shortestPath(car.nodeId, car.targetId);
-    if (path && path.length>=2) {
-      // рассчитать стоимость
-      const newLen = path.length-1;
-      const changed = Math.max(0, newLen - car.lastPlannedLenPaid);
-      const cost = this.rules.routeBaseRecalc + changed*this.rules.routePerEdge;
-      if (this.money >= cost) {
-        this.money -= cost;
-        car.route = path.slice();
-        car.routeIndex = 0;
-        car.lastPlannedLenPaid = newLen;
-      } else {
-        alert("Недостаточно денег для пересчета маршрута.");
-      }
-    }
+function updateRouteDrag(x, y) {
+  if (!state.interaction.active || state.interaction.type !== 'route') return;
+  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
+  if (!vehicle) return;
+  const nearest = findNearestNode(x, y, 42);
+  state.interaction.hoverNode = nearest ? nearest.id : null;
+  if (!nearest) return;
+  const graph = state.graph;
+  if (!graph?.size) return;
+  const path = state.interaction.path;
+  const last = path[path.length - 1];
+  if (nearest.id === last) return;
+  if (!graph.get(last)?.neighbors.has(nearest.id)) return;
+  if (path.length >= 2 && nearest.id === path[path.length - 2]) {
+    path.pop();
+    setHint('Шаг назад по маршруту.');
+    return;
   }
-
-  // -------------------- Алгоритмы --------------------
-  _shortestPath(startId, goalId) {
-    // Простая Dijkstra по количеству ребер + легкая оценка задержек от светофоров/очередей
-    const N = this.graph.nodes.length;
-    const distArr = Array(N).fill(Infinity);
-    const prev = Array(N).fill(-1);
-    distArr[startId] = 0;
-    const visited = new Set();
-    while (true) {
-      let u = -1, best = Infinity;
-      for (let i=0;i<N;i++) if (!visited.has(i) && distArr[i]<best) { best=distArr[i]; u=i; }
-      if (u === -1 || u===goalId) break;
-      visited.add(u);
-      const node = this.graph.nodes[u];
-      for (const v of node.neighbors) {
-        const e = this.graph.edge(u,v);
-        if (e.oneWay && e.oneWay.ttl>0) {
-          // если односторонний не позволяет из u в v для NPC, для игрока можно — оставим, но чуть увеличим вес
-        }
-        let w = 1;
-        // штраф за светофор (ожидание), если у цели узла есть свет
-        const n2 = this.graph.nodes[v];
-        if (n2.light) w += 0.2;
-        const nd = distArr[u] + w;
-        if (nd < distArr[v]) { distArr[v] = nd; prev[v] = u; }
-      }
-    }
-    if (!isFinite(distArr[goalId])) return null;
-    const path = [];
-    for (let cur=goalId; cur!=-1; cur=prev[cur]) path.push(cur);
-    path.reverse();
-    return path;
+  if (path.includes(nearest.id) && nearest.id !== vehicle.goal) {
+    setHint('Этот узел уже есть в маршруте.');
+    return;
   }
-
-  // -------------------- Ход игры --------------------
-  endTurn() {
-    // 1) применить отложенные действия прошлого хода
-    this._applyQueued();
-
-    // 2) тики светофоров и TTL/CD на ребрах
-    for (const nid of this.intersections) {
-      this.graph.nodes[nid].light.tick();
-    }
-    for (const e of this.graph.edges.values()) {
-      if (e.oneWay) {
-        if (e.oneWay.ttl>0) e.oneWay.ttl--;
-        if (e.oneWay.ttl===0) e.oneWay = null;
-      }
-      if (e.cd>0) e.cd--;
-    }
-
-    // 3) спаун NPC
-    this._spawnNPC();
-
-    // 4) перемещение: собираем заявки перемещений
-    const intents = [];
-    for (const car of this.cars) {
-      if (car.crashHold>0) { car.crashHold--; continue; }
-
-      // ожидание на узле
-      let waitHere = 0;
-      if (car.wait>0) { waitHere = car.wait; car.wait--; }
-      if (car.waitMap && car.waitMap.has(car.nodeId) && car.routeIndex < car.route.length-1) {
-        // если в карте ожиданий прописано ожидание на этом узле — взять разово
-        const w = car.waitMap.get(car.nodeId);
-        if (w>0) { car.wait = w; car.waitMap.delete(car.nodeId); }
-      }
-      if (car.wait>0 || waitHere>0) continue;
-
-      // цель достигнута?
-      if (car.owner==='player' && car.atTarget()) continue;
-
-      // определить следующий узел
-      let nextId = null;
-      if (car.owner==='player') {
-        // идти по маршруту, если есть
-        if (car.routeIndex < car.route.length-1) {
-          nextId = car.route[car.routeIndex+1];
-        } else {
-          // нет маршрута — стоим
-          nextId = null;
-        }
-      } else {
-        // NPC: если пути нет или дошли до цели — выберем новую цель и путь
-        if (!car.predictedPath || car.routeIndex >= car.predictedPath.length-1) {
-          const target = this._randomFarNode(car.nodeId, 6, 18);
-          const path = this._shortestPath(car.nodeId, target);
-          car.predictedPath = path ? path : [car.nodeId];
-          car.routeIndex = 0;
-        }
-        if (car.routeIndex < car.predictedPath.length-1) nextId = car.predictedPath[car.routeIndex+1];
-      }
-
-      if (nextId==null) continue;
-
-      // проверка светофора и одностороннего знак
-      const can = this._canEnter(car, car.nodeId, nextId);
-      if (!can.allowed) {
-        // блокировка на перекрестке штрафует только игрока, если он перекресток и мы стоим тут
-        const node = this.graph.nodes[car.nodeId];
-        if (car.owner==='player' && node.light && node.neighbors.size>=3) {
-          this.money -= this.rules.fineBlock;
-          this.penalties += this.rules.fineBlock;
-        }
-        continue;
-      }
-
-      intents.push({car, from: car.nodeId, to: nextId, priority: can.priority});
-    }
-
-    // 5) разрешение конфликтов: на узле может войти только один
-    const bucket = new Map(); // toId -> list of intents
-    for (const it of intents) {
-      if (!bucket.has(it.to)) bucket.set(it.to, []);
-      bucket.get(it.to).push(it);
-    }
-    for (const [toId, list] of bucket) {
-      if (list.length===1) {
-        this._applyMove(list[0]);
-      } else {
-        // сортируем по приоритету: зелёный, приоритет, меньшая очередь, старшинство
-        list.sort((a,b)=> b.priority - a.priority);
-        const winner = list[0];
-        // столкновение, если приоритеты равны и обе машины имели зеленый? В упрощении — ничья = вежливый стоп
-        if (list.length>=2 && list[0].priority===list[1].priority && list[0].priority>=2) {
-          // вежливый стоп: никто не двигается
-        } else {
-          this._applyMove(winner);
-          // остальные стояли, если среди проигравших есть игрок и у него был красный — штраф
-          for (let i=1;i<list.length;i++) {
-            const looser = list[i];
-            // нет отдельного штрафа за красный, потому что мы вообще-то не пропускаем красный
-          }
-        }
-      }
-    }
-
-    // 6) Выплаты/задания
-    for (const car of this.playerCars) {
-      if (car.atTarget()) {
-        // рассчитать выплату
-        const L = car.totalRouteLen;
-        const T = car.travelTime;
-        const pay = this.rules.basePay + this.rules.perEdge * L + Math.max(0, this.rules.speedBonusCap - T)*this.rules.speedBonusPer;
-        // Проверка чистоты: здесь без учета «красного», применим если не было crashHold и блокировки накопленной
-        const clean = (car.blockingPenalty<=0);
-        const total = clean ? pay * this.rules.cleanMult : pay;
-        this.money += total;
-        this.trips += 1;
-        // сброс
-        car.totalRouteLen = 0;
-        car.travelTime = 0;
-        car.blockingPenalty = 0;
-        // новая цель
-        car.targetId = this._randomFarNode(car.nodeId, 6, 18);
-        // сброс оплаченной длины планирования
-        car.lastPlannedLenPaid = Math.max(0, car.route.length-1);
-      }
-    }
-
-    // 7) Конец хода
-    this.turn++;
-    if (this.turn > this.turnLimit) {
-      alert(`Партия окончена. Доход: ${Math.floor(this.money)}₵, рейсов: ${this.trips}`);
-      this.turn = 1; this.money = 0; this.trips = 0; this.penalties = 0;
-      this._assignTargets();
-      for (const car of this.playerCars) {
-        car.route = [car.nodeId];
-        car.routeIndex = 0;
-      }
-      // очистка NPC
-      this.cars = this.playerCars.slice();
-      this.npcCars = [];
-    }
-
-    this._updateHUD();
+  path.push(nearest.id);
+  if (nearest.id === vehicle.goal) {
+    setHint('Маршрут до цели готов. Можно отпустить.');
+  } else {
+    setHint('Отпустите, чтобы закрепить, или продолжайте дальше.');
   }
+}
 
-  _applyQueued() {
-    const pending = this.actionsQueued.slice();
-    this.actionsQueued = [];
-    for (const act of pending) {
-      if (act.type==='switchLight') {
-        const n = this.graph.nodes[act.nodeId];
-        if (n && n.light) n.light.manualSwitch(this.turn);
-      } else if (act.type==='oneway') {
-        const e = this.graph.edge(act.a, act.b);
-        if (e && e.cd<=0) {
-          // выберем направление случайно для запрета NPC, игрокам разрешим оба, но NPC будут избегать
-          e.oneWay = { allowFrom: Math.random()<0.5? act.a : act.b, ttl: this.rules.oneWayTTL, cd: this.rules.oneWayCD };
-          e.cd = this.rules.oneWayCD;
-        }
-      } else if (act.type==='decBump') {
-        // через 10 ходов снимем один bump — реализуем задержкой повторно
-        setTimeout(()=>{
-          const b = (this.manualCostsBump.get(act.nodeId)||0);
-          if (b>0) this.manualCostsBump.set(act.nodeId, b-1);
-        }, 0);
-      }
-    }
+function finishRouteDrag() {
+  if (!state.interaction.active || state.interaction.type !== 'route') {
+    state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+    return;
   }
-
-  _canEnter(car, fromId, toId) {
-    const toNode = this.graph.nodes[toId];
-    const fromNode = this.graph.nodes[fromId];
-    const edge = this.graph.edge(fromId, toId);
-    let green = true;
-    // Правило светофора: если в to узле есть светофор, половина направлений красная
-    if (toNode.light) {
-      // Простая эвристика: разделим входящие направления по углу относительно центра.
-      const angle = Math.atan2(fromNode.y-toNode.y, fromNode.x-toNode.x); // направление въезда
-      const deg = (angle*180/Math.PI + 360)%360;
-      const phase = toNode.light.state; // 0 или 1
-      // группа 0: [ -45..45 ] U [135..225], группа 1: остальные
-      const inGroup0 = (deg<=45 || deg>=315) || (deg>=135 && deg<=225);
-      green = (phase===0 && inGroup0) || (phase===1 && !inGroup0);
-    }
-    // односторонний: NPC не могут, игрок может
-    if (edge.oneWay && edge.oneWay.ttl>0) {
-      if (car.owner==='npc') {
-        if (edge.oneWay.allowFrom !== fromId) return {allowed:false, priority:0};
-      }
-    }
-    if (!green) return {allowed:false, priority:0};
-    // приоритет: зелёный = 2, без светофора = 1
-    const pr = toNode.light ? 2 : 1;
-    return {allowed:true, priority:pr};
+  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
+  if (!vehicle) {
+    state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+    return;
   }
-
-  _applyMove(intent) {
-    const {car, from, to} = intent;
-    if (car.owner==='player') {
-      car.totalRouteLen += 1;
-      car.travelTime += 1;
-      // удалить голову маршрута если совпала
-      if (car.routeIndex < car.route.length-1 && car.route[car.routeIndex+1]===to) {
-        car.routeIndex++;
-      } else {
-        // если ушли не по маршруту (например после пересчета NPC перекрыл), просто перезапишем голову
-        car.route = [to];
-        car.routeIndex = 0;
-      }
+  const path = state.interaction.path;
+  if (path.length > 1) {
+    commitRoute(vehicle, path);
+    if (path[path.length - 1] === vehicle.goal) {
+      setHint('Маршрут до цели обновлён.');
     } else {
-      car.travelTime += 1;
-      if (car.predictedPath && car.routeIndex < car.predictedPath.length-1 && car.predictedPath[car.routeIndex+1]===to) {
-        car.routeIndex++;
-      } else {
-        car.predictedPath = [to];
-        car.routeIndex = 0;
-      }
+      setHint('Маршрут сохранён. Можно продолжить планирование позже.');
     }
-    car.nodeId = to;
+  } else {
+    setHint('Маршрут слишком короткий. Добавьте ещё один узел.');
+  }
+  state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+}
+
+function commitRoute(vehicle, path, remote = false) {
+  if (state.mode === 'online' && !remote) {
+    sendOnlineUpdate({ type: 'setRoute', vehicle: vehicle.id, path });
+    setHint('Маршрут отправлен на сервер.');
+    return;
+  }
+  vehicle.route = path.slice(1);
+  vehicle.history = path.slice();
+  vehicle.waiting = 0;
+  logEvent(`${vehicle.label} меняет маршрут: ${path.join(' → ')}.`);
+  updateUI();
+}
+
+function applyStopOrder(vehicle, nodeId, amount, remote = false) {
+  if (state.mode === 'online' && !remote) {
+    sendOnlineUpdate({ type: 'stop', vehicle: vehicle.id, node: nodeId, amount });
+    setHint('Стоп отправлен на сервер.');
+    return;
+  }
+  if (!vehicle.stopOrders) vehicle.stopOrders = {};
+  vehicle.stopOrders[nodeId] = amount;
+  logEvent(`${vehicle.label} поставит стоп на узле ${nodeId} (${amount} ход(ов)).`);
+  updateUI();
+}
+
+function processVehicleTurn(vehicle) {
+  if (vehicle.waiting > 0) {
+    vehicle.waiting -= 1;
+    logEvent(`${vehicle.label} ожидает на узле ${vehicle.current}.`);
+    return;
+  }
+  const plannedStop = vehicle.stopOrders ? vehicle.stopOrders[vehicle.current] : undefined;
+  if (plannedStop) {
+    vehicle.waiting = plannedStop - 1;
+    delete vehicle.stopOrders[vehicle.current];
+    logEvent(`${vehicle.label} держит стоп на узле ${vehicle.current} (${plannedStop} ход(ов)).`);
+    return;
+  }
+  if (!vehicle.route.length) {
+    logEvent(`${vehicle.label} ждёт новый маршрут.`);
+    return;
+  }
+  const next = vehicle.route.shift();
+  vehicle.current = next;
+  vehicle.stepsTaken += 1;
+  logEvent(`${vehicle.label} движется к узлу ${next}.`);
+  if (vehicle.current === vehicle.goal) {
+    handleArrival(vehicle);
+  }
+}
+
+function handleArrival(vehicle) {
+  const owner = state.players.find((p) => p.id === vehicle.ownerId);
+  if (!owner) return;
+  owner.deliveries += 1;
+  const gained = Math.max(10, 40 - vehicle.stepsTaken * 2);
+  owner.score += gained;
+  logEvent(`${vehicle.label} достиг цели ${vehicle.goalInfo?.label || vehicle.goal} и заработал ${gained} очков!`);
+  vehicle.stepsTaken = 0;
+  vehicle.stopOrders = {};
+  vehicle.waiting = 0;
+  const nextDest = randomDestination(vehicle.goal);
+  vehicle.goal = nextDest.node;
+  vehicle.goalInfo = nextDest;
+  vehicle.route = [];
+  vehicle.history = [];
+  if (owner.type === 'ai' && state.mode === 'solo') {
+    planShortestRoute(vehicle);
+  } else if (state.mode === 'online') {
+    sendOnlineUpdate({ type: 'routeComplete', vehicle: vehicle.id, score: owner.score, deliveries: owner.deliveries });
+  }
+}
+
+function renderLoop() {
+  drawScene();
+  requestAnimationFrame(renderLoop);
+}
+
+function drawScene() {
+  const pixelScale = view.pixelScale || window.devicePixelRatio || 1;
+  ctx.save();
+  ctx.setTransform(pixelScale, 0, 0, pixelScale, 0, 0);
+  const mapWidth = state.map?.width || MAP_BOUNDS.width;
+  const mapHeight = state.map?.height || MAP_BOUNDS.height;
+  ctx.clearRect(0, 0, mapWidth, mapHeight);
+  drawBackground();
+  drawRoads();
+  drawDestinations();
+  drawStopOrders();
+  drawVehicleRoutes();
+  drawInteractionPreview();
+  drawVehicles();
+  if (state.showNodes || !state.running || !state.mode) {
+    drawNodes();
+  }
+  ctx.restore();
+}
+
+function drawBackground() {
+  ctx.save();
+  const mapWidth = state.map?.width || MAP_BOUNDS.width;
+  const mapHeight = state.map?.height || MAP_BOUNDS.height;
+  const gradient = ctx.createLinearGradient(0, 0, 0, mapHeight);
+  gradient.addColorStop(0, '#f7fbff');
+  gradient.addColorStop(1, '#e3f2ff');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, mapWidth, mapHeight);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+  ctx.beginPath();
+  ctx.moveTo(mapWidth * 0.05, mapHeight * 0.15);
+  ctx.bezierCurveTo(mapWidth * 0.35, mapHeight * -0.05, mapWidth * 0.65, mapHeight * 0.1, mapWidth * 0.92, mapHeight * 0.2);
+  ctx.lineTo(mapWidth * 0.92, mapHeight * 0.85);
+  ctx.bezierCurveTo(mapWidth * 0.6, mapHeight * 0.95, mapWidth * 0.25, mapHeight * 0.9, mapWidth * 0.08, mapHeight * 0.8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawRoads() {
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  const segments = [];
+  for (const [a, b] of state.map.edges || []) {
+    const na = nodeById(a);
+    const nb = nodeById(b);
+    if (!na || !nb) continue;
+    segments.push({ ax: na.x, ay: na.y, bx: nb.x, by: nb.y });
   }
 
-  _spawnNPC() {
-    const Nnodes = this.graph.nodes.length;
-    const targetNPC = Math.floor(Nnodes * this.rules.npcMaxFactor);
-    if (this.npcCars.length >= targetNPC) return;
-    const toSpawn = Math.max(0, Math.floor(Nnodes * this.rules.npcSpawnRate));
-    for (let i=0;i<toSpawn;i++) {
-      const nid = randInt(0, this.graph.nodes.length-1);
-      const car = new Car(`N${Date.now()}_${Math.floor(Math.random()*10000)}`, 'npc', nid);
-      car.predictedPath = null;
-      car.routeIndex = 0;
-      this.cars.push(car);
-      this.npcCars.push(car);
-    }
+  if (!segments.length) {
+    ctx.restore();
+    return;
   }
 
-  // -------------------- Рендер --------------------
-  _loop() {
-    requestAnimationFrame(()=>this._loop());
-    this._render();
-    this._updateHUD();
-  }
-
-  _render() {
-    const ctx = this.ctx; const w = this.w, h = this.h;
-    ctx.clearRect(0,0,w,h);
-
-    // edges
-    ctx.lineWidth = 4;
-    for (const e of this.graph.edges.values()) {
-      const A = this.graph.nodes[e.a], B = this.graph.nodes[e.b];
-      ctx.strokeStyle = "#2c3443";
-      ctx.beginPath();
-      ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
-
-      if (e.oneWay && e.oneWay.ttl>0) {
-        // рисуем стрелку по направлению allowFrom -> другой
-        ctx.strokeStyle = "#f39c12";
-        ctx.lineWidth = 2;
-        const from = e.oneWay.allowFrom===e.a ? A : B;
-        const to = e.oneWay.allowFrom===e.a ? B : A;
-        const vx = (to.x - from.x), vy = (to.y - from.y);
-        const len = Math.hypot(vx,vy);
-        const ux = vx/len, uy = vy/len;
-        const cx = from.x + ux*(len*0.5), cy = from.y + uy*(len*0.5);
-        ctx.beginPath();
-        ctx.moveTo(cx-uy*6, cy+ux*6);
-        ctx.lineTo(cx+uy*6, cy-ux*6);
-        ctx.stroke();
-        ctx.lineWidth = 4;
-      }
-    }
-
-    // nodes
-    for (const n of this.graph.nodes) {
-      // светофорная индикация
-      if (n.light) {
-        const green = n.light.state===0 ? "#2ecc71" : "#e74c3c";
-        ctx.fillStyle = green;
-        ctx.beginPath(); ctx.arc(n.x, n.y, 4, 0, Math.PI*2); ctx.fill();
-      } else {
-        ctx.fillStyle = "#6b7280";
-        ctx.beginPath(); ctx.arc(n.x, n.y, 2.5, 0, Math.PI*2); ctx.fill();
-      }
-    }
-
-    // targets
-    for (const car of this.playerCars) {
-      const t = this.graph.nodes[car.targetId];
-      if (t) {
-        ctx.strokeStyle = "#3a7afe";
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(t.x, t.y, 11, 0, Math.PI*2); ctx.stroke();
-      }
-    }
-
-    // routes
-    for (const car of this.playerCars) {
-      if (car.route.length>=2) {
-        ctx.strokeStyle = "#3a7afe";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        for (let i=0;i<car.route.length;i++) {
-          const n = this.graph.nodes[car.route[i]];
-          if (i===0) ctx.moveTo(n.x, n.y); else ctx.lineTo(n.x, n.y);
-        }
-        ctx.stroke();
-      }
-      // ожидания
-      if (car.waitMap) {
-        ctx.fillStyle = "#ffd166";
-        for (const [nid, w] of car.waitMap.entries()) {
-          const n = this.graph.nodes[nid];
-          ctx.beginPath(); ctx.arc(n.x, n.y, 6, 0, Math.PI*2); ctx.fill();
-        }
-      }
-    }
-
-    // cars
-    for (const car of this.cars) {
-      const n = this.graph.nodes[car.nodeId];
-      ctx.fillStyle = car.owner==='player' ? "#3498db" : "#bdc3c7";
-      ctx.beginPath(); ctx.arc(n.x, n.y, car.owner==='player'?6:4, 0, Math.PI*2); ctx.fill();
-    }
-
-    // hover info
-    if (this.hover.carId) {
-      const car = this.cars.find(c=>c.id===this.hover.carId);
-      if (car && car.owner==='npc' && car.predictedPath) {
-        const path = car.predictedPath;
-        this._drawPreview(path, 5, "#bdc3c7");
-      }
-    }
-
-    // HUD overlays
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
-    ctx.fillRect(6, this.h-26, 320, 20);
-    ctx.fillStyle = "#cbd5e1";
-    ctx.font = "12px system-ui, sans-serif";
-    ctx.fillText(`Инструмент: ${this.tool}`, 12, this.h-12);
-  }
-
-  _drawPreview(path, k, color) {
-    const ctx = this.ctx;
+  const strokeNetwork = (color, width, alpha = 1) => {
+    ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6,6]);
+    ctx.lineWidth = width;
+    ctx.globalAlpha = alpha;
     ctx.beginPath();
-    for (let i=0;i<Math.min(path.length, k);i++) {
-      const n = this.graph.nodes[path[i]];
-      if (i===0) ctx.moveTo(n.x, n.y); else ctx.lineTo(n.x, n.y);
+    for (const segment of segments) {
+      ctx.moveTo(segment.ax, segment.ay);
+      ctx.lineTo(segment.bx, segment.by);
     }
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.restore();
+  };
+
+  strokeNetwork('#141c24', ROAD_WIDTH + 12, 0.8);
+  strokeNetwork('#1f2a37', ROAD_WIDTH + 6, 0.95);
+  strokeNetwork('#2e3a48', ROAD_WIDTH, 1);
+
+  ctx.fillStyle = '#2e3a48';
+  ctx.strokeStyle = '#1c2632';
+  ctx.lineWidth = 4;
+  const padRadius = ROAD_WIDTH * 0.58;
+  for (const node of state.map.nodes) {
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, padRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.lineWidth = 4;
+  ctx.setLineDash([26, 18]);
+  ctx.lineDashOffset = -12;
+  ctx.beginPath();
+  for (const segment of segments) {
+    ctx.moveTo(segment.ax, segment.ay);
+    ctx.lineTo(segment.bx, segment.by);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawDestinations() {
+  for (const dest of state.destinations) {
+    const node = nodeById(dest.node);
+    if (!node) continue;
+    ctx.save();
+    ctx.translate(node.x, node.y);
+    ctx.fillStyle = dest.color;
+    ctx.strokeStyle = 'rgba(38, 68, 86, 0.2)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(-24, -24, 48, 48, 14);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = '22px Nunito';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(dest.icon, 0, 2);
+    ctx.restore();
   }
 }
 
-// -------------------- Старт --------------------
-window.addEventListener('DOMContentLoaded', ()=>{
-  const cv = document.getElementById('game');
-  const game = new Game(cv);
+function drawVehicleRoutes() {
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const vehicle of state.vehicles) {
+    const owner = state.players.find((p) => p.id === vehicle.ownerId);
+    if (!owner) continue;
+    const controllable = canControlVehicle(vehicle);
+    const isSelected = state.selectedVehicleId === vehicle.id;
+    const rawPath = [vehicle.current, ...(Array.isArray(vehicle.route) ? vehicle.route : [])];
+    if (rawPath.length < 2) continue;
+    let path = rawPath;
+    if (!controllable) {
+      if (!isSelected) {
+        continue;
+      }
+      const maxNodes = Math.min(rawPath.length, 4);
+      path = rawPath.slice(0, maxNodes);
+    }
+    const first = nodeById(path[0]);
+    if (!first) continue;
+    ctx.strokeStyle = controllable ? `${owner.color}cc` : `${owner.color}88`;
+    ctx.lineWidth = controllable ? 10 : 8;
+    ctx.beginPath();
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < path.length; i += 1) {
+      const node = nodeById(path[i]);
+      if (!node) continue;
+      ctx.lineTo(node.x, node.y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
-  // Экспорт в window для отладки
-  window.__game = game;
-});
+function drawStopOrders() {
+  ctx.save();
+  for (const vehicle of state.vehicles) {
+    const owner = state.players.find((p) => p.id === vehicle.ownerId);
+    if (!owner) continue;
+    const stops = vehicle.stopOrders ? Object.entries(vehicle.stopOrders) : [];
+    for (const [nodeId, amount] of stops) {
+      const node = nodeById(nodeId);
+      if (!node) continue;
+      ctx.fillStyle = `${owner.color}40`;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `${owner.color}80`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, 18, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 12px Nunito';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`×${amount}`, node.x, node.y);
+    }
+  }
+  if (state.stopDrag.active && state.stopDrag.hoverNode) {
+    const node = nodeById(state.stopDrag.hoverNode);
+    if (node) {
+      ctx.strokeStyle = 'rgba(34, 66, 90, 0.35)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, 24, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  ctx.restore();
+}
+
+function drawInteractionPreview() {
+  if (!state.interaction.active || state.interaction.type !== 'route') return;
+  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
+  if (!vehicle) return;
+  const owner = state.players.find((p) => p.id === vehicle.ownerId);
+  const path = state.interaction.path;
+  if (!path || path.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = `${owner?.color || '#264456'}aa`;
+  ctx.lineWidth = 8;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  const start = nodeById(path[0]);
+  ctx.moveTo(start.x, start.y);
+  for (let i = 1; i < path.length; i += 1) {
+    const node = nodeById(path[i]);
+    ctx.lineTo(node.x, node.y);
+  }
+  ctx.stroke();
+  if (state.interaction.hoverNode) {
+    const hover = nodeById(state.interaction.hoverNode);
+    if (hover) {
+      ctx.fillStyle = `${owner?.color || '#264456'}55`;
+      ctx.beginPath();
+      ctx.arc(hover.x, hover.y, 16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function drawVehicles() {
+  for (const vehicle of state.vehicles) {
+    const node = nodeById(vehicle.current);
+    if (!node) continue;
+    let angle = 0;
+    if (vehicle.route?.length) {
+      const next = nodeById(vehicle.route[0]);
+      if (next) angle = Math.atan2(next.y - node.y, next.x - node.x);
+    } else if (vehicle.history?.length >= 2) {
+      const prev = nodeById(vehicle.history[vehicle.history.length - 2]);
+      if (prev) angle = Math.atan2(node.y - prev.y, node.x - prev.x);
+    }
+    ctx.save();
+    ctx.translate(node.x, node.y);
+    ctx.rotate(angle);
+    ctx.translate(0, VEHICLE_LANE_OFFSET);
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.28)';
+    ctx.shadowBlur = 10;
+    const baseColor = vehicle.color || '#3b82f6';
+    const darker = darkenColor(baseColor, 0.35);
+    const roof = lightenColor(baseColor, 0.25);
+    const bodyLength = 46;
+    const bodyWidth = 18;
+    const wheelWidth = 6;
+    const wheelHeight = bodyWidth + 10;
+
+    ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
+    ctx.fillRect(-bodyLength / 2 + 4, -wheelHeight / 2, wheelWidth, wheelHeight);
+    ctx.fillRect(bodyLength / 2 - wheelWidth - 4, -wheelHeight / 2, wheelWidth, wheelHeight);
+
+    ctx.fillStyle = darker;
+    ctx.beginPath();
+    ctx.roundRect(-bodyLength / 2, -bodyWidth / 2 - 2, bodyLength, bodyWidth + 4, bodyWidth / 2.1);
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = baseColor;
+    ctx.beginPath();
+    ctx.roundRect(-bodyLength / 2, -bodyWidth / 2, bodyLength, bodyWidth, bodyWidth / 2.6);
+    ctx.fill();
+
+    ctx.fillStyle = roof;
+    ctx.beginPath();
+    ctx.roundRect(-bodyLength / 2 + 6, -bodyWidth / 2 + 4, bodyLength - 12, bodyWidth - 8, bodyWidth / 3);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    const windowLength = (bodyLength - 20) / 2 - 4;
+    ctx.beginPath();
+    ctx.roundRect(-bodyLength / 2 + 8, -bodyWidth / 2 + 5, windowLength, bodyWidth - 10, 5);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.roundRect(-bodyLength / 2 + 12 + windowLength, -bodyWidth / 2 + 5, windowLength, bodyWidth - 10, 5);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255, 251, 235, 0.9)';
+    ctx.fillRect(bodyLength / 2 - 5, -5, 3, 5);
+    ctx.fillRect(bodyLength / 2 - 5, 0, 3, 5);
+
+    ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
+    ctx.font = 'bold 14px Nunito';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(vehicle.order), -bodyLength / 2 + 12, 0);
+
+    if (vehicle.id === state.selectedVehicleId) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(-bodyLength / 2 - 5, -bodyWidth / 2 - 5, bodyLength + 10, bodyWidth + 10, bodyWidth / 2.2);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+}
+
+function drawNodes() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(38, 68, 86, 0.7)';
+  ctx.font = '14px Nunito';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const node of state.map.nodes) {
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.strokeStyle = 'rgba(38, 68, 86, 0.3)';
+    ctx.lineWidth = 2;
+    ctx.arc(node.x, node.y, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(38, 68, 86, 0.75)';
+    ctx.fillText(node.id, node.x, node.y - 16);
+  }
+  ctx.restore();
+}
+
+function logEndOfTurn() {
+  logEvent(`Ход ${state.turn} завершён.`);
+}
+
+function checkEndGame() {
+  if (state.turn < state.turnLimit) return;
+  state.running = false;
+  elements.btnAdvance.disabled = true;
+  const sorted = [...state.players].sort((a, b) => b.score - a.score);
+  const winner = sorted[0];
+  const message = winner
+    ? `Партия завершена. Победитель: ${winner.name} (${winner.score} очков).`
+    : 'Партия завершена.';
+  logEvent(message);
+  setHint(message);
+  renderModeOverlay(message);
+}
+
+function setupModeSelection() {
+  const modeCards = Array.from(document.querySelectorAll('.mode-card'));
+  const details = elements.modeDetails;
+  const storage = typeof window !== 'undefined' ? window.localStorage : null;
+  const localState = {
+    count: 2,
+    names: [
+      state.preferences.playerName || 'Игрок 1',
+      'Игрок 2',
+      'Игрок 3',
+      'Игрок 4',
+    ],
+  };
+  let selectedMode = null;
+
+  const playerCountText = (count) => {
+    if (count === 1) return '1 игрок';
+    if (count >= 2 && count <= 4) return `${count} игрока`;
+    return `${count} игроков`;
+  };
+
+  const setCardSelection = (mode) => {
+    modeCards.forEach((card) => {
+      const active = card.dataset.mode === mode;
+      card.classList.toggle('selected', active);
+      card.setAttribute('aria-selected', String(active));
+    });
+  };
+
+  const ensureStartState = () => {
+    if (!selectedMode) {
+      elements.btnStart.disabled = true;
+      return;
+    }
+    if (selectedMode === 'local') {
+      const ready = localState.names
+        .slice(0, localState.count)
+        .every((name, index) => {
+          const trimmed = (name || '').trim();
+          if (!trimmed.length) return false;
+          localState.names[index] = name;
+          return true;
+        });
+      elements.btnStart.disabled = !ready;
+      return;
+    }
+    if (selectedMode === 'online') {
+      const hasName = (state.preferences.playerName || '').trim().length > 0;
+      elements.btnStart.disabled = !hasName;
+      return;
+    }
+    elements.btnStart.disabled = false;
+  };
+
+  const renderSoloDetails = () => {
+    if (!details) return;
+    details.innerHTML = '';
+    const intro = document.createElement('p');
+    intro.textContent = 'Сразитесь с автопилотом. Ваша цель — быстрее доставить пассажиров по скрытым узлам.';
+    const tip = document.createElement('p');
+    tip.textContent = 'Совет: протяните маршрут прямо от машин и используйте стопы, чтобы задерживать соперника.';
+    details.append(intro, tip);
+  };
+
+  const renderLocalDetails = () => {
+    if (!details) return;
+    details.innerHTML = '';
+    const info = document.createElement('p');
+    info.textContent = 'Настройте количество игроков (2–4) и впишите имена, чтобы различать маршруты.';
+    const sliderField = document.createElement('div');
+    sliderField.className = 'field';
+    const sliderLabel = document.createElement('span');
+    sliderLabel.textContent = 'Количество игроков';
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = '2';
+    slider.max = '4';
+    slider.step = '1';
+    slider.value = String(localState.count);
+    const sliderValue = document.createElement('output');
+    sliderValue.textContent = playerCountText(localState.count);
+    slider.addEventListener('input', () => {
+      localState.count = Number(slider.value);
+      sliderValue.textContent = playerCountText(localState.count);
+      if (!localState.names[localState.count - 1]) {
+        localState.names[localState.count - 1] = `Игрок ${localState.count}`;
+      }
+      renderLocalDetails();
+      ensureStartState();
+    });
+    sliderField.append(sliderLabel, slider, sliderValue);
+
+    const names = document.createElement('div');
+    names.className = 'names';
+    for (let i = 0; i < localState.count; i += 1) {
+      if (!localState.names[i] || !localState.names[i].trim().length) {
+        localState.names[i] = `Игрок ${i + 1}`;
+      }
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = localState.names[i];
+      input.placeholder = `Игрок ${i + 1}`;
+      input.addEventListener('input', () => {
+        localState.names[i] = input.value;
+        ensureStartState();
+      });
+      names.appendChild(input);
+    }
+
+    details.append(info, sliderField, names);
+  };
+
+  const renderOnlineDetails = () => {
+    if (!details) return;
+    details.innerHTML = '';
+    const summary = document.createElement('p');
+    summary.textContent = 'Мы подключим вас к серверу irgri.uk и автоматически подберём свободную комнату.';
+    const nameInfo = document.createElement('p');
+    const currentName = (state.preferences.playerName || '').trim() || 'Диспетчер';
+    nameInfo.innerHTML = `Ваше имя в лобби: <strong>${currentName}</strong>. Измените его в настройках слева.`;
+    const tip = document.createElement('p');
+    tip.textContent = 'После подключения дождитесь второго игрока и нажмите «Следующий ход», чтобы начать партию.';
+    details.append(summary, nameInfo, tip);
+  };
+
+  const renderDetails = () => {
+    if (!details) return;
+    if (!selectedMode) {
+      details.innerHTML = '';
+      const placeholder = document.createElement('p');
+      placeholder.textContent = 'Выберите режим, чтобы увидеть настройки матча.';
+      details.appendChild(placeholder);
+      elements.btnStart.textContent = 'Начать игру';
+      elements.btnStart.disabled = true;
+      return;
+    }
+    if (selectedMode === 'solo') {
+      renderSoloDetails();
+    } else if (selectedMode === 'local') {
+      renderLocalDetails();
+    } else if (selectedMode === 'online') {
+      renderOnlineDetails();
+    }
+    elements.btnStart.textContent = selectedMode === 'online' ? 'Подключиться' : 'Начать игру';
+    ensureStartState();
+  };
+
+  function selectMode(mode) {
+    selectedMode = mode;
+    setCardSelection(mode);
+    renderDetails();
+  }
+
+  modeCards.forEach((card) => {
+    card.addEventListener('click', () => {
+      selectMode(card.dataset.mode);
+    });
+  });
+
+  if (elements.prefShowNodes) {
+    elements.prefShowNodes.addEventListener('change', () => {
+      state.preferences.showNodes = elements.prefShowNodes.checked;
+      try {
+        storage?.setItem('trafficity.showNodes', String(state.preferences.showNodes));
+      } catch (err) {
+        /* ignore */
+      }
+    });
+  }
+
+  if (elements.prefPlayerName) {
+    elements.prefPlayerName.addEventListener('input', () => {
+      const raw = elements.prefPlayerName.value;
+      const trimmed = raw.trim();
+      state.preferences.playerName = trimmed;
+      if (!localState.names[0] || localState.names[0].startsWith('Игрок ')) {
+        localState.names[0] = trimmed || 'Игрок 1';
+      }
+      try {
+        storage?.setItem('trafficity.playerName', trimmed);
+      } catch (err) {
+        /* ignore */
+      }
+      if (selectedMode === 'online') {
+        renderDetails();
+      } else {
+        ensureStartState();
+      }
+    });
+  }
+
+  elements.btnStart.addEventListener('click', () => {
+    if (!selectedMode) return;
+    elements.modeScreen.classList.add('hidden');
+    elements.modeScreen.classList.remove('visible');
+    if (selectedMode === 'solo') {
+      startSoloGame();
+    } else if (selectedMode === 'local') {
+      const preparedNames = localState.names
+        .slice(0, localState.count)
+        .map((name, index) => {
+          const trimmed = (name || '').trim();
+          return trimmed.length ? trimmed : `Игрок ${index + 1}`;
+        });
+      startLocalGame(preparedNames);
+    } else if (selectedMode === 'online') {
+      const name = (state.preferences.playerName || '').trim() || 'Игрок';
+      startOnlineGame({ name, action: 'auto' });
+    }
+  });
+
+  selectMode('solo');
+}
+function setupOnlineGame(payload) {
+  if (payload.map) {
+    setMap(payload.map, payload.destinations);
+  }
+  state.running = true;
+  state.turnLimit = payload.turnLimit || TURN_LIMIT;
+  state.turn = payload.turn || 0;
+  state.players = payload.players;
+  state.localPlayerId = payload.you;
+  state.vehicles = payload.vehicles;
+  state.activePlayer = payload.active || null;
+  elements.btnAdvance.disabled = payload.active !== payload.you;
+  state.selectedVehicleId = null;
+  state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+  state.stopDrag = { active: false, vehicleId: null, amount: Number(elements.stopAmount.value) || 1, hoverNode: null };
+  selectDefaultVehicle(state.localPlayerId);
+  setHint(payload.message || 'Подождите свой ход.');
+  updateUI();
+}
+
+function handleOnlineMessage(event) {
+  const data = JSON.parse(event.data);
+  switch (data.type) {
+    case 'lobby':
+      if (data.payload.you) state.localPlayerId = data.payload.you;
+      if (Array.isArray(data.payload.players)) state.players = data.payload.players;
+      if (data.payload.code) state.roomCode = data.payload.code;
+      state.activePlayer = data.payload.host || null;
+      state.running = false;
+      setHint(data.payload.message);
+      elements.btnAdvance.disabled = !(data.payload.ready && data.payload.host === state.localPlayerId);
+      if (data.payload.message) logEvent(data.payload.message);
+      updateUI();
+      break;
+    case 'start':
+      setupOnlineGame(data.payload);
+      elements.modeScreen.classList.add('hidden');
+      elements.modeScreen.classList.remove('visible');
+      break;
+    case 'state':
+      if (data.payload.map) {
+        setMap(data.payload.map, data.payload.destinations);
+      } else if (Array.isArray(data.payload.destinations) && data.payload.destinations.length) {
+        state.destinations = data.payload.destinations.map((point) => ({ ...point }));
+      }
+      state.turn = data.payload.turn;
+      state.players = data.payload.players;
+      state.vehicles = data.payload.vehicles;
+      state.activePlayer = data.payload.active || null;
+      state.turnLimit = data.payload.turnLimit || state.turnLimit;
+      state.running = true;
+      state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+      state.stopDrag = { active: false, vehicleId: null, amount: Number(elements.stopAmount.value) || 1, hoverNode: null };
+      elements.btnAdvance.disabled = data.payload.active !== state.localPlayerId;
+      setHint(data.payload.message);
+      if (data.payload.message) logEvent(data.payload.message);
+      updateUI();
+      break;
+    case 'error':
+      logEvent(`Ошибка: ${data.payload}`);
+      break;
+  }
+}
+
+function sendOnlineUpdate(payload) {
+  if (!state.online?.socket || state.online.socket.readyState !== WebSocket.OPEN) return;
+  state.online.socket.send(JSON.stringify({ type: 'update', payload }));
+}
+
+function renderModeOverlay(message) {
+  if (!state.running) {
+    elements.modeScreen.classList.remove('hidden');
+    elements.modeScreen.classList.add('visible');
+    setHint(message);
+  }
+}
+
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function (x, y, width, height, radius) {
+    const r = Math.min(radius, width / 2, height / 2);
+    this.beginPath();
+    this.moveTo(x + r, y);
+    this.arcTo(x + width, y, x + width, y + height, r);
+    this.arcTo(x + width, y + height, x, y + height, r);
+    this.arcTo(x, y + height, x, y, r);
+    this.arcTo(x, y, x + width, y, r);
+    this.closePath();
+    return this;
+  };
+}
