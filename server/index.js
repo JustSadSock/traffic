@@ -8,79 +8,17 @@ const TURN_LIMIT = 30;
 const PLAYER_COLORS = ['#ff8ba7', '#70d6ff', '#ffd166', '#6ef2a5'];
 const VEHICLE_EMOJIS = ['①', '②'];
 
-const MAP = {
-  nodes: [
-    { id: 'A', x: 150, y: 560 },
-    { id: 'B', x: 210, y: 420 },
-    { id: 'C', x: 250, y: 290 },
-    { id: 'D', x: 360, y: 180 },
-    { id: 'E', x: 520, y: 130 },
-    { id: 'F', x: 690, y: 150 },
-    { id: 'G', x: 840, y: 230 },
-    { id: 'H', x: 910, y: 330 },
-    { id: 'I', x: 950, y: 470 },
-    { id: 'J', x: 860, y: 600 },
-    { id: 'K', x: 700, y: 660 },
-    { id: 'L', x: 520, y: 690 },
-    { id: 'M', x: 360, y: 650 },
-    { id: 'N', x: 250, y: 500 },
-    { id: 'O', x: 500, y: 480 },
-    { id: 'P', x: 660, y: 470 },
-    { id: 'Q', x: 780, y: 400 },
-    { id: 'R', x: 520, y: 310 },
-    { id: 'C1', x: 600, y: 360 },
-  ],
-  edges: [
-    ['A', 'B'],
-    ['B', 'C'],
-    ['C', 'D'],
-    ['D', 'E'],
-    ['E', 'F'],
-    ['F', 'G'],
-    ['G', 'H'],
-    ['H', 'I'],
-    ['I', 'J'],
-    ['J', 'K'],
-    ['K', 'L'],
-    ['L', 'M'],
-    ['M', 'A'],
-    ['B', 'N'],
-    ['N', 'M'],
-    ['C', 'R'],
-    ['R', 'E'],
-    ['R', 'O'],
-    ['O', 'P'],
-    ['P', 'Q'],
-    ['Q', 'H'],
-    ['N', 'O'],
-    ['O', 'L'],
-    ['P', 'K'],
-    ['F', 'Q'],
-    ['G', 'Q'],
-    ['R', 'C1'],
-    ['C1', 'O'],
-    ['C1', 'P'],
-    ['C1', 'Q'],
-  ],
-};
-
-const DELIVERY_POINTS = [
-  { node: 'E', label: 'Розовый дом', color: '#ffafcc', icon: '🏠' },
-  { node: 'H', label: 'Синий офис', color: '#70d6ff', icon: '🏢' },
-  { node: 'L', label: 'Жёлтая площадь', color: '#ffd166', icon: '🧁' },
-  { node: 'B', label: 'Бирюзовый рынок', color: '#a0e7e5', icon: '🛍️' },
-  { node: 'J', label: 'Солнечный пляж', color: '#ffe066', icon: '🏖️' },
-  { node: 'C', label: 'Лавандовый парк', color: '#cdb4db', icon: '🌸' },
+const MAP_BOUNDS = { width: 1200, height: 780 };
+const DESTINATION_THEMES = [
+  { label: 'Парк светлячков', color: '#8bd3dd', icon: '🌿' },
+  { label: 'Ванильная кофейня', color: '#ffd6a5', icon: '☕' },
+  { label: 'Бирюзовый лофт', color: '#9bf6ff', icon: '🏙️' },
+  { label: 'Лавандовая площадь', color: '#cdb4db', icon: '🌸' },
+  { label: 'Солнечный рынок', color: '#ffe066', icon: '🛍️' },
+  { label: 'Озеро Дрифтвуд', color: '#b5e48c', icon: '🛶' },
+  { label: 'Коралловая набережная', color: '#ffafcc', icon: '🌊' },
+  { label: 'Неоновый гараж', color: '#a0c4ff', icon: '🛠️' },
 ];
-
-const START_SETS = [
-  ['A', 'M'],
-  ['H', 'J'],
-  ['C', 'E'],
-  ['K', 'G'],
-];
-
-const graph = buildGraph(MAP);
 
 const app = express();
 app.use(express.static(path.join(__dirname, '..')));
@@ -92,19 +30,142 @@ let clientCounter = 1;
 const clients = new Map(); // ws -> { id, roomCode }
 const rooms = new Map(); // code -> room
 
+function randomBetween(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function shuffle(array) {
+  const result = array.slice();
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+function distance(a, b) {
+  return Math.hypot((a?.x || 0) - (b?.x || 0), (a?.y || 0) - (b?.y || 0));
+}
+
+function generateCityMap() {
+  const width = MAP_BOUNDS.width;
+  const height = MAP_BOUNDS.height;
+  const cols = 6;
+  const rows = 4;
+  const marginX = 120;
+  const marginY = 120;
+  const stepX = (width - marginX * 2) / (cols - 1);
+  const stepY = (height - marginY * 2) / (rows - 1);
+  const nodes = [];
+  const adjacency = new Map();
+  let idCounter = 1;
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const id = `N${idCounter.toString().padStart(2, '0')}`;
+      idCounter += 1;
+      const jitterX = randomBetween(-stepX * 0.35, stepX * 0.35);
+      const jitterY = randomBetween(-stepY * 0.35, stepY * 0.35);
+      const x = marginX + col * stepX + jitterX;
+      const y = marginY + row * stepY + jitterY;
+      nodes.push({ id, x, y });
+      adjacency.set(id, new Set());
+    }
+  }
+
+  const edges = [];
+  const edgeSet = new Set();
+  const addEdge = (a, b) => {
+    if (!a || !b || a === b) return;
+    const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+    if (edgeSet.has(key)) return;
+    edgeSet.add(key);
+    edges.push([a, b]);
+    adjacency.get(a)?.add(b);
+    adjacency.get(b)?.add(a);
+  };
+
+  const indexOf = (row, col) => row * cols + col;
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const current = nodes[indexOf(row, col)];
+      if (!current) continue;
+      if (col < cols - 1) {
+        addEdge(current.id, nodes[indexOf(row, col + 1)]?.id);
+      }
+      if (row < rows - 1) {
+        addEdge(current.id, nodes[indexOf(row + 1, col)]?.id);
+      }
+      if (row < rows - 1 && col < cols - 1 && Math.random() < 0.55) {
+        addEdge(current.id, nodes[indexOf(row + 1, col + 1)]?.id);
+      }
+      if (row < rows - 1 && col > 0 && Math.random() < 0.35) {
+        addEdge(current.id, nodes[indexOf(row + 1, col - 1)]?.id);
+      }
+    }
+  }
+
+  const typicalSpan = Math.hypot(stepX, stepY) * 1.4;
+  const extras = Math.floor(nodes.length * 1.5);
+  for (let i = 0; i < extras; i += 1) {
+    const a = nodes[Math.floor(Math.random() * nodes.length)];
+    if (!a) continue;
+    const candidates = nodes.filter((node) => node.id !== a.id && distance(node, a) <= typicalSpan * randomBetween(0.7, 1.6));
+    if (!candidates.length) continue;
+    const b = candidates[Math.floor(Math.random() * candidates.length)];
+    addEdge(a.id, b.id);
+  }
+
+  const buildComponents = () => {
+    const seen = new Set();
+    const components = [];
+    for (const node of nodes) {
+      if (seen.has(node.id)) continue;
+      const queue = [node.id];
+      const component = [];
+      seen.add(node.id);
+      while (queue.length) {
+        const current = queue.shift();
+        component.push(current);
+        for (const next of adjacency.get(current) || []) {
+          if (seen.has(next)) continue;
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+      components.push(component);
+    }
+    return components;
+  };
+
+  let components = buildComponents();
+  while (components.length > 1) {
+    const detached = components.pop();
+    const anchor = components[0];
+    const from = detached[Math.floor(Math.random() * detached.length)];
+    const to = anchor[Math.floor(Math.random() * anchor.length)];
+    addEdge(from, to);
+    components = buildComponents();
+  }
+
+  return { width, height, nodes, edges };
+}
+
 function buildGraph(map) {
   const nodes = new Map();
+  if (!map?.nodes) return nodes;
   for (const node of map.nodes) {
     nodes.set(node.id, { ...node, neighbors: new Set() });
   }
-  for (const [a, b] of map.edges) {
-    nodes.get(a).neighbors.add(b);
-    nodes.get(b).neighbors.add(a);
+  for (const [a, b] of map.edges || []) {
+    nodes.get(a)?.neighbors.add(b);
+    nodes.get(b)?.neighbors.add(a);
   }
   return nodes;
 }
 
-function shortestPath(start, goal) {
+function shortestPath(graph, start, goal) {
+  if (!graph?.size) return null;
   if (start === goal) return [start];
   const queue = [start];
   const visited = new Set([start]);
@@ -112,7 +173,7 @@ function shortestPath(start, goal) {
   while (queue.length) {
     const current = queue.shift();
     if (current === goal) break;
-    for (const neighbor of graph.get(current).neighbors) {
+    for (const neighbor of graph.get(current)?.neighbors || []) {
       if (visited.has(neighbor)) continue;
       visited.add(neighbor);
       prev.set(neighbor, current);
@@ -129,20 +190,68 @@ function shortestPath(start, goal) {
   return path;
 }
 
-function randomDestination(exclude) {
-  const options = DELIVERY_POINTS.filter((d) => d.node !== exclude);
-  return options[Math.floor(Math.random() * options.length)];
+function generateDestinations(map) {
+  if (!map?.nodes?.length) return [];
+  const styles = shuffle(DESTINATION_THEMES);
+  const spots = shuffle(map.nodes.slice());
+  const count = Math.min(styles.length, Math.max(6, Math.floor(map.nodes.length / 3)));
+  const result = [];
+  for (let i = 0; i < count; i += 1) {
+    const node = spots[i % spots.length];
+    const style = styles[i % styles.length];
+    result.push({ node: node.id, label: style.label, color: style.color, icon: style.icon });
+  }
+  return result;
 }
 
-function createVehicle(player, index, startNode) {
-  const dest = randomDestination(startNode);
+function createRoundLayout() {
+  const map = generateCityMap();
+  const destinations = generateDestinations(map);
+  return { map, destinations };
+}
+
+function pickStartingPairs(map, graph, playerCount) {
+  const eligible = map.nodes.filter((node) => (graph.get(node.id)?.neighbors.size || 0) >= 2);
+  const pool = eligible.length >= playerCount * 2 ? eligible : map.nodes;
+  const picks = shuffle(pool);
+  const pairs = [];
+  let index = 0;
+  for (let i = 0; i < playerCount; i += 1) {
+    const first = picks[index % picks.length];
+    index += 1;
+    let second = picks[index % picks.length];
+    index += 1;
+    if (!second || second.id === first.id) {
+      second = pool.find((node) => node.id !== first.id) || first;
+    }
+    pairs.push([first.id, second.id]);
+  }
+  return pairs;
+}
+
+function randomDestination(room, exclude) {
+  const pool = room.destinations && room.destinations.length ? room.destinations : generateDestinations(room.map);
+  const candidates = pool.filter((d) => d.node !== exclude);
+  const source = candidates.length ? candidates : pool;
+  if (!source.length) {
+    const fallback = room.map?.nodes?.[0];
+    return fallback
+      ? { node: fallback.id, label: 'Финиш', color: '#ffd6a5', icon: '🏁' }
+      : { node: exclude, label: 'Финиш', color: '#ffd6a5', icon: '🏁' };
+  }
+  return source[Math.floor(Math.random() * source.length)];
+}
+
+function createVehicle(room, player, index, startNode) {
+  const starting = startNode || room.map.nodes[0]?.id;
+  const dest = randomDestination(room, starting);
   return {
     id: `${player.id}-${index + 1}`,
     ownerId: player.id,
     order: index + 1,
     label: `${player.name} ${VEHICLE_EMOJIS[index] || index + 1}`,
     color: player.color,
-    current: startNode,
+    current: starting,
     goal: dest.node,
     goalInfo: dest,
     route: [],
@@ -207,6 +316,9 @@ function createRoom(socket, name) {
     turnLimit: TURN_LIMIT,
     activePlayerId: null,
     vehicles: [],
+    map: null,
+    graph: new Map(),
+    destinations: [],
   };
   rooms.set(code, room);
   const player = addPlayer(room, socket, name, true);
@@ -267,6 +379,9 @@ function removePlayer(socket) {
     room.vehicles = [];
     room.turn = 0;
     room.activePlayerId = room.hostId;
+    room.map = null;
+    room.graph = new Map();
+    room.destinations = [];
   }
   notifyLobby(room, `${name} отключился.`);
 }
@@ -286,13 +401,18 @@ function startGame(room) {
   room.state = 'running';
   room.turn = 0;
   room.activePlayerId = room.hostId;
+  const layout = createRoundLayout();
+  room.map = layout.map;
+  room.graph = buildGraph(room.map);
+  room.destinations = layout.destinations;
   room.vehicles = [];
+  const pairs = pickStartingPairs(room.map, room.graph, room.players.length);
   room.players.forEach((player, index) => {
     player.deliveries = 0;
     player.score = 0;
-    const pair = START_SETS[index % START_SETS.length];
+    const pair = pairs[index] || [];
     pair.forEach((startNode, idx) => {
-      const vehicle = createVehicle(player, idx, startNode);
+      const vehicle = createVehicle(room, player, idx, startNode);
       room.vehicles.push(vehicle);
     });
   });
@@ -303,6 +423,8 @@ function startGame(room) {
     turn: room.turn,
     turnLimit: room.turnLimit,
     active: room.activePlayerId,
+    map: room.map,
+    destinations: room.destinations,
     message: `Игра началась! Ходит ${playerById(room, room.activePlayerId)?.name || 'ведущий'}.`,
   }));
 }
@@ -315,22 +437,24 @@ function vehicleById(room, id) {
   return room.vehicles.find((v) => v.id === id);
 }
 
-function validatePath(vehicle, path) {
+function validatePath(room, vehicle, path) {
   if (!Array.isArray(path) || path.length < 2) return false;
   if (path[0] !== vehicle.current) return false;
   if (path[path.length - 1] !== vehicle.goal) return false;
+  const graph = room.graph;
+  if (!graph?.size) return false;
   for (let i = 0; i < path.length - 1; i += 1) {
     const a = path[i];
     const b = path[i + 1];
-    if (!graph.get(a).neighbors.has(b)) return false;
+    if (!graph.get(a)?.neighbors.has(b)) return false;
   }
   return true;
 }
 
 function applyRoute(room, payload) {
   const vehicle = vehicleById(room, payload.vehicle);
-  if (!vehicle) return { ok: false, message: 'Маршрутка не найдена' };
-  if (!validatePath(vehicle, payload.path)) return { ok: false, message: 'Маршрут недействителен' };
+  if (!vehicle) return { ok: false, message: 'Машина не найдена' };
+  if (!validatePath(room, vehicle, payload.path)) return { ok: false, message: 'Маршрут недействителен' };
   vehicle.route = payload.path.slice(1);
   vehicle.history = payload.path.slice();
   return { ok: true, message: `${vehicle.label} получил новый маршрут.` };
@@ -338,9 +462,9 @@ function applyRoute(room, payload) {
 
 function applyStop(room, payload) {
   const vehicle = vehicleById(room, payload.vehicle);
-  if (!vehicle) return { ok: false, message: 'Маршрутка не найдена' };
+  if (!vehicle) return { ok: false, message: 'Машина не найдена' };
   const node = typeof payload.node === 'string' ? payload.node : null;
-  if (!node || !graph.has(node)) {
+  if (!node || !room.graph.has(node)) {
     return { ok: false, message: 'Узел не найден' };
   }
   const amount = Math.max(1, Math.min(5, Number(payload.amount) || 1));
@@ -400,7 +524,7 @@ function handleArrival(room, vehicle, events) {
   owner.score += gained;
   events.push(`${vehicle.label} завершил доставку (${gained} очков).`);
   vehicle.stepsTaken = 0;
-  const dest = randomDestination(vehicle.goal);
+  const dest = randomDestination(room, vehicle.goal);
   vehicle.goal = dest.node;
   vehicle.goalInfo = dest;
   vehicle.route = [];
@@ -415,7 +539,10 @@ function broadcastState(room, message) {
     turnLimit: room.turnLimit,
     players: serializePlayers(room.players),
     vehicles: serializeVehicles(room),
+    map: room.map,
+    destinations: room.destinations,
     active: room.activePlayerId,
+    you: id,
     message,
   }));
 }

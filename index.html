@@ -28,13 +28,13 @@
 
       <main class="app-main">
         <section class="board" aria-label="Городская карта">
-          <canvas id="gameCanvas" width="1200" height="780" role="img" aria-label="Город маршрутов"></canvas>
+          <canvas id="gameCanvas" width="1200" height="780" role="img" aria-label="Городская трасса"></canvas>
           <div id="hint" class="hint"></div>
         </section>
         <aside class="sidebar">
           <section class="panel">
             <header>
-              <h2>Маршрутки</h2>
+              <h2>Машины</h2>
               <p id="activePlayerLabel">Режим ожидания</p>
             </header>
             <div id="vehicleList" class="vehicle-list"></div>
@@ -45,7 +45,7 @@
             </header>
             <div class="actions-body">
               <p class="note">
-                Нажмите на свою маршрутку на карте и протяните путь через узлы до цели. Для задержки перетащите жетон «Стоп» на нужный узел.
+                Зажмите свою машину на карте и протяните маршрут через узлы до цели. Для задержки перетащите жетон «Стоп» на нужный узел.
               </p>
               <label class="stop-label" for="stopAmount">Ходов ожидания: <span id="stopAmountLabel">1</span></label>
               <input type="range" id="stopAmount" min="1" max="5" value="1" />
@@ -70,12 +70,12 @@
           <div class="menu-title">
             <h2>Trafficity</h2>
             <p>
-              Дуэль маршрутов в уютном минимализме: протягивайте линии по скрытым узлам,
-              ставьте стопы и обгоняйте соперника за 30 ходов.
+              Дуэль городских пилотов: ведите машины по скрытым узлам, ставьте стопы и
+              обгоняйте соперника за 30 ходов.
             </p>
           </div>
           <div class="menu-settings">
-            <h3>Настройки диспетчера</h3>
+            <h3>Настройки гонщика</h3>
             <label class="field">
               <span>Ваше имя</span>
               <input id="prefPlayerName" type="text" maxlength="24" placeholder="Например, Виолетта" />
@@ -85,7 +85,7 @@
               <span>Показывать узлы на старте партии</span>
             </label>
             <ul class="menu-highlights">
-              <li>🎯 Карта создавалась для честной дуэли «кто быстрее».</li>
+              <li>🎯 Новая карта генерируется для каждой партии.</li>
               <li>🖱️ Маршруты задаются простым перетягиванием от машин.</li>
               <li>📱 Интерфейс адаптирован под экраны ПК и телефонов.</li>
             </ul>

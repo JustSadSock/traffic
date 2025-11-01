@@ -2,84 +2,20 @@ const TURN_LIMIT = 30;
 const PLAYER_COLORS = ['#ff8ba7', '#70d6ff', '#ffd166', '#6ef2a5'];
 const VEHICLE_EMOJIS = ['①', '②'];
 
-const MAP = {
-  width: 1200,
-  height: 780,
-  nodes: [
-    { id: 'A', x: 150, y: 560 },
-    { id: 'B', x: 210, y: 420 },
-    { id: 'C', x: 250, y: 290 },
-    { id: 'D', x: 360, y: 180 },
-    { id: 'E', x: 520, y: 130 },
-    { id: 'F', x: 690, y: 150 },
-    { id: 'G', x: 840, y: 230 },
-    { id: 'H', x: 910, y: 330 },
-    { id: 'I', x: 950, y: 470 },
-    { id: 'J', x: 860, y: 600 },
-    { id: 'K', x: 700, y: 660 },
-    { id: 'L', x: 520, y: 690 },
-    { id: 'M', x: 360, y: 650 },
-    { id: 'N', x: 250, y: 500 },
-    { id: 'O', x: 500, y: 480 },
-    { id: 'P', x: 660, y: 470 },
-    { id: 'Q', x: 780, y: 400 },
-    { id: 'R', x: 520, y: 310 },
-    { id: 'C1', x: 600, y: 360 },
-  ],
-  edges: [
-    ['A', 'B'],
-    ['B', 'C'],
-    ['C', 'D'],
-    ['D', 'E'],
-    ['E', 'F'],
-    ['F', 'G'],
-    ['G', 'H'],
-    ['H', 'I'],
-    ['I', 'J'],
-    ['J', 'K'],
-    ['K', 'L'],
-    ['L', 'M'],
-    ['M', 'A'],
-    ['B', 'N'],
-    ['N', 'M'],
-    ['C', 'R'],
-    ['R', 'E'],
-    ['R', 'O'],
-    ['O', 'P'],
-    ['P', 'Q'],
-    ['Q', 'H'],
-    ['N', 'O'],
-    ['O', 'L'],
-    ['P', 'K'],
-    ['F', 'Q'],
-    ['G', 'Q'],
-    ['R', 'C1'],
-    ['C1', 'O'],
-    ['C1', 'P'],
-    ['C1', 'Q'],
-  ],
-};
-
-const DELIVERY_POINTS = [
-  { node: 'E', label: 'Розовый дом', color: '#ffafcc', icon: '🏠' },
-  { node: 'H', label: 'Синий офис', color: '#70d6ff', icon: '🏢' },
-  { node: 'L', label: 'Жёлтая площадь', color: '#ffd166', icon: '🧁' },
-  { node: 'B', label: 'Бирюзовый рынок', color: '#a0e7e5', icon: '🛍️' },
-  { node: 'J', label: 'Солнечный пляж', color: '#ffe066', icon: '🏖️' },
-  { node: 'C', label: 'Лавандовый парк', color: '#cdb4db', icon: '🌸' },
-];
-
-const START_SETS = [
-  ['A', 'M'],
-  ['H', 'J'],
-  ['C', 'E'],
-  ['K', 'G'],
+const MAP_BOUNDS = { width: 1200, height: 780 };
+const DESTINATION_THEMES = [
+  { label: 'Парк светлячков', color: '#8bd3dd', icon: '🌿' },
+  { label: 'Ванильная кофейня', color: '#ffd6a5', icon: '☕' },
+  { label: 'Бирюзовый лофт', color: '#9bf6ff', icon: '🏙️' },
+  { label: 'Лавандовая площадь', color: '#cdb4db', icon: '🌸' },
+  { label: 'Солнечный рынок', color: '#ffe066', icon: '🛍️' },
+  { label: 'Озеро Дрифтвуд', color: '#b5e48c', icon: '🛶' },
+  { label: 'Коралловая набережная', color: '#ffafcc', icon: '🌊' },
+  { label: 'Неоновый гараж', color: '#a0c4ff', icon: '🛠️' },
 ];
 
 const ONLINE_HTTP = 'https://irgri.uk/';
 const ONLINE_WS = 'wss://irgri.uk/';
-
-const graph = buildGraph(MAP);
 
 const elements = {
   canvas: document.getElementById('gameCanvas'),
@@ -106,6 +42,9 @@ const ctx = elements.canvas.getContext('2d');
 const view = { scale: 1, pixelScale: 1 };
 
 const state = {
+  map: { width: MAP_BOUNDS.width, height: MAP_BOUNDS.height, nodes: [], edges: [] },
+  graph: new Map(),
+  destinations: [],
   running: false,
   mode: null,
   showNodes: false,
@@ -140,22 +79,225 @@ const state = {
   },
 };
 
+setMap(generateCityMap());
+
+function randomBetween(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function shuffle(array) {
+  const result = array.slice();
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+function generateCityMap() {
+  const width = MAP_BOUNDS.width;
+  const height = MAP_BOUNDS.height;
+  const cols = 6;
+  const rows = 4;
+  const marginX = 120;
+  const marginY = 120;
+  const stepX = (width - marginX * 2) / (cols - 1);
+  const stepY = (height - marginY * 2) / (rows - 1);
+  const nodes = [];
+  const adjacency = new Map();
+  let idCounter = 1;
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const id = `N${idCounter.toString().padStart(2, '0')}`;
+      idCounter += 1;
+      const jitterX = randomBetween(-stepX * 0.35, stepX * 0.35);
+      const jitterY = randomBetween(-stepY * 0.35, stepY * 0.35);
+      const x = marginX + col * stepX + jitterX;
+      const y = marginY + row * stepY + jitterY;
+      nodes.push({ id, x, y });
+      adjacency.set(id, new Set());
+    }
+  }
+
+  const edges = [];
+  const edgeSet = new Set();
+
+  const addEdge = (a, b) => {
+    if (!a || !b || a === b) return;
+    const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+    if (edgeSet.has(key)) return;
+    edgeSet.add(key);
+    edges.push([a, b]);
+    adjacency.get(a)?.add(b);
+    adjacency.get(b)?.add(a);
+  };
+
+  const indexOf = (row, col) => row * cols + col;
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const current = nodes[indexOf(row, col)];
+      if (!current) continue;
+      if (col < cols - 1) {
+        addEdge(current.id, nodes[indexOf(row, col + 1)]?.id);
+      }
+      if (row < rows - 1) {
+        addEdge(current.id, nodes[indexOf(row + 1, col)]?.id);
+      }
+      if (row < rows - 1 && col < cols - 1 && Math.random() < 0.55) {
+        addEdge(current.id, nodes[indexOf(row + 1, col + 1)]?.id);
+      }
+      if (row < rows - 1 && col > 0 && Math.random() < 0.35) {
+        addEdge(current.id, nodes[indexOf(row + 1, col - 1)]?.id);
+      }
+    }
+  }
+
+  const typicalSpan = Math.hypot(stepX, stepY) * 1.4;
+  const extras = Math.floor(nodes.length * 1.5);
+  for (let i = 0; i < extras; i += 1) {
+    const a = nodes[Math.floor(Math.random() * nodes.length)];
+    if (!a) continue;
+    const candidates = nodes.filter((node) => node.id !== a.id && distance(node, a) <= typicalSpan * randomBetween(0.7, 1.6));
+    if (!candidates.length) continue;
+    const b = candidates[Math.floor(Math.random() * candidates.length)];
+    addEdge(a.id, b.id);
+  }
+
+  const buildComponents = () => {
+    const seen = new Set();
+    const components = [];
+    for (const node of nodes) {
+      if (seen.has(node.id)) continue;
+      const queue = [node.id];
+      const component = [];
+      seen.add(node.id);
+      while (queue.length) {
+        const current = queue.shift();
+        component.push(current);
+        for (const next of adjacency.get(current) || []) {
+          if (seen.has(next)) continue;
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+      components.push(component);
+    }
+    return components;
+  };
+
+  let components = buildComponents();
+  while (components.length > 1) {
+    const detached = components.pop();
+    const anchor = components[0];
+    const from = detached[Math.floor(Math.random() * detached.length)];
+    const to = anchor[Math.floor(Math.random() * anchor.length)];
+    addEdge(from, to);
+    components = buildComponents();
+  }
+
+  return { width, height, nodes, edges };
+}
+
 function buildGraph(map) {
   const nodes = new Map();
+  if (!map?.nodes) return nodes;
   for (const node of map.nodes) {
     nodes.set(node.id, { ...node, neighbors: new Set() });
   }
-  for (const [a, b] of map.edges) {
-    nodes.get(a).neighbors.add(b);
-    nodes.get(b).neighbors.add(a);
+  for (const [a, b] of map.edges || []) {
+    nodes.get(a)?.neighbors.add(b);
+    nodes.get(b)?.neighbors.add(a);
   }
   return nodes;
 }
 
-const nodeById = (id) => graph.get(id);
+function generateDestinations(map) {
+  if (!map?.nodes?.length) return [];
+  const styles = shuffle(DESTINATION_THEMES);
+  const spots = shuffle(map.nodes.slice());
+  const count = Math.min(styles.length, Math.max(6, Math.floor(map.nodes.length / 3)));
+  const result = [];
+  for (let i = 0; i < count; i += 1) {
+    const node = spots[i % spots.length];
+    const style = styles[i % styles.length];
+    result.push({ node: node.id, label: style.label, color: style.color, icon: style.icon });
+  }
+  return result;
+}
+
+function setMap(map, destinations) {
+  const nextMap = {
+    width: map?.width || MAP_BOUNDS.width,
+    height: map?.height || MAP_BOUNDS.height,
+    nodes: Array.isArray(map?.nodes) ? map.nodes.slice() : [],
+    edges: Array.isArray(map?.edges) ? map.edges.map((edge) => edge.slice()) : [],
+  };
+  state.map = nextMap;
+  state.graph = buildGraph(nextMap);
+  const points = Array.isArray(destinations) && destinations.length ? destinations : generateDestinations(nextMap);
+  state.destinations = points.map((point) => ({ ...point }));
+  resizeCanvas();
+}
+
+function createRoundLayout() {
+  const map = generateCityMap();
+  const destinations = generateDestinations(map);
+  return { map, destinations };
+}
+
+function nodeById(id) {
+  return state.graph?.get(id) || null;
+}
 
 function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
+  return Math.hypot((a?.x || 0) - (b?.x || 0), (a?.y || 0) - (b?.y || 0));
+}
+
+function findNearestNode(x, y, maxDistance = Infinity) {
+  let closest = null;
+  let best = maxDistance;
+  for (const node of state.map.nodes) {
+    const d = distance({ x, y }, node);
+    if (d <= best) {
+      best = d;
+      closest = node;
+    }
+  }
+  return closest;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function mixChannel(channel, factor, lighten = true) {
+  return lighten
+    ? Math.round(channel + (255 - channel) * factor)
+    : Math.round(channel * (1 - factor));
+}
+
+function adjustColor(hex, factor, lighten = true) {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return hex;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  const f = clamp(factor, 0, 1);
+  const nr = mixChannel(r, f, lighten);
+  const ng = mixChannel(g, f, lighten);
+  const nb = mixChannel(b, f, lighten);
+  return `#${nr.toString(16).padStart(2, '0')}${ng.toString(16).padStart(2, '0')}${nb
+    .toString(16)
+    .padStart(2, '0')}`;
+}
+
+function lightenColor(hex, factor = 0.2) {
+  return adjustColor(hex, factor, true);
+}
+
+function darkenColor(hex, factor = 0.2) {
+  return adjustColor(hex, factor, false);
 }
 
 function resizeCanvas() {
@@ -167,9 +309,11 @@ function resizeCanvas() {
     return;
   }
   const ratio = window.devicePixelRatio || 1;
-  const scale = Math.min(availableWidth / MAP.width, availableHeight / MAP.height);
-  const displayWidth = Math.max(MAP.width * scale, 1);
-  const displayHeight = Math.max(MAP.height * scale, 1);
+  const mapWidth = state.map?.width || MAP_BOUNDS.width;
+  const mapHeight = state.map?.height || MAP_BOUNDS.height;
+  const scale = Math.min(availableWidth / mapWidth, availableHeight / mapHeight);
+  const displayWidth = Math.max(mapWidth * scale, 1);
+  const displayHeight = Math.max(mapHeight * scale, 1);
   elements.canvas.style.width = `${displayWidth}px`;
   elements.canvas.style.height = `${displayHeight}px`;
   elements.canvas.width = Math.max(1, Math.round(displayWidth * ratio));
@@ -180,7 +324,7 @@ function resizeCanvas() {
 
 function loadPreferences() {
   const defaults = {
-    playerName: 'Диспетчер',
+    playerName: 'Игрок',
     showNodes: false,
   };
   try {
@@ -210,6 +354,8 @@ function loadPreferences() {
 }
 
 function shortestPath(start, goal) {
+  const graph = state.graph;
+  if (!graph?.size) return null;
   if (start === goal) return [start];
   const queue = [start];
   const visited = new Set([start]);
@@ -217,7 +363,7 @@ function shortestPath(start, goal) {
   while (queue.length) {
     const current = queue.shift();
     if (current === goal) break;
-    for (const next of graph.get(current).neighbors) {
+    for (const next of graph.get(current)?.neighbors || []) {
       if (visited.has(next)) continue;
       visited.add(next);
       prev.set(next, current);
@@ -235,8 +381,16 @@ function shortestPath(start, goal) {
 }
 
 function randomDestination(exclude) {
-  const candidates = DELIVERY_POINTS.filter((d) => d.node !== exclude);
-  return candidates[Math.floor(Math.random() * candidates.length)];
+  const pool = state.destinations.length ? state.destinations : generateDestinations(state.map);
+  const candidates = pool.filter((d) => d.node !== exclude);
+  const source = candidates.length ? candidates : pool;
+  if (!source.length) {
+    const fallback = state.map.nodes[0];
+    return fallback
+      ? { node: fallback.id, label: 'Финиш', color: '#ffd6a5', icon: '🏁' }
+      : { node: exclude, label: 'Финиш', color: '#ffd6a5', icon: '🏁' };
+  }
+  return source[Math.floor(Math.random() * source.length)];
 }
 
 function createPlayer(id, name, type, color) {
@@ -251,14 +405,15 @@ function createPlayer(id, name, type, color) {
 }
 
 function createVehicle(player, index, startNode) {
-  const dest = randomDestination(startNode);
+  const starting = startNode || state.map.nodes[0]?.id;
+  const dest = randomDestination(starting);
   return {
     id: `${player.id}-${index + 1}`,
     label: `${player.name} ${VEHICLE_EMOJIS[index] || index + 1}`,
     ownerId: player.id,
     order: index + 1,
     color: player.color,
-    current: startNode,
+    current: starting,
     goal: dest.node,
     goalInfo: dest,
     route: [],
@@ -270,7 +425,8 @@ function createVehicle(player, index, startNode) {
 }
 
 function startSoloGame() {
-  resetState();
+  const layout = createRoundLayout();
+  resetState(layout);
   const displayName = (state.preferences.playerName || '').trim() || 'Вы';
   const human = createPlayer('player', displayName, 'human', PLAYER_COLORS[0]);
   const ai = createPlayer('ai', 'Автопилот', 'ai', PLAYER_COLORS[1]);
@@ -280,7 +436,7 @@ function startSoloGame() {
   assignVehicles();
   autoPlanForAI();
   selectDefaultVehicle(human.id);
-  setHint('Нажмите на маршрутку и протяните путь до цели.');
+  setHint('Нажмите на машину и протяните линию по узлам до цели.');
   state.mode = 'solo';
   state.running = true;
   elements.btnAdvance.disabled = false;
@@ -288,7 +444,8 @@ function startSoloGame() {
 }
 
 function startLocalGame(names) {
-  resetState();
+  const layout = createRoundLayout();
+  resetState(layout);
   state.players = names.map((name, idx) =>
     createPlayer(
       `p${idx + 1}`,
@@ -301,7 +458,7 @@ function startLocalGame(names) {
   state.activePlayer = null;
   assignVehicles();
   selectDefaultVehicle(state.localPlayerId);
-  setHint('Игроки тянут маршруты и ставят стопы, затем нажимают «Следующий ход».');
+  setHint('Игроки тянут маршруты машин и ставят стопы, затем нажимают «Следующий ход».');
   state.mode = 'local';
   state.running = true;
   elements.btnAdvance.disabled = false;
@@ -334,12 +491,18 @@ function startOnlineGame(config) {
   });
 }
 
-function resetState() {
+function resetState(layout) {
+  if (layout?.map) {
+    setMap(layout.map, layout.destinations);
+  } else if (!state.map.nodes.length) {
+    setMap(generateCityMap());
+  }
   state.running = false;
   state.players = [];
   state.vehicles = [];
   state.selectedVehicleId = null;
   state.turn = 0;
+  state.turnLimit = TURN_LIMIT;
   state.log = [];
   state.hint = '';
   state.localPlayerId = null;
@@ -348,17 +511,39 @@ function resetState() {
   state.showNodes = !!state.preferences.showNodes;
   state.roomCode = null;
   state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
-  state.stopDrag = { active: false, vehicleId: null, amount: 1, hoverNode: null };
+  const stopAmount = Number(elements.stopAmount?.value) || 1;
+  state.stopDrag = { active: false, vehicleId: null, amount: stopAmount, hoverNode: null };
   elements.log.innerHTML = '';
   elements.btnToggleNodes.textContent = state.showNodes ? 'Скрыть узлы' : 'Показать узлы';
   elements.stopHandle.disabled = true;
   updateHint();
 }
 
+function pickStartingPairs(playerCount) {
+  const graph = state.graph;
+  const eligible = state.map.nodes.filter((node) => (graph.get(node.id)?.neighbors.size || 0) >= 2);
+  const pool = eligible.length >= playerCount * 2 ? eligible : state.map.nodes;
+  const picks = shuffle(pool);
+  const pairs = [];
+  let index = 0;
+  for (let i = 0; i < playerCount; i += 1) {
+    const first = picks[index % picks.length];
+    index += 1;
+    let second = picks[index % picks.length];
+    index += 1;
+    if (!second || second.id === first.id) {
+      second = pool.find((node) => node.id !== first.id) || first;
+    }
+    pairs.push([first.id, second.id]);
+  }
+  return pairs;
+}
+
 function assignVehicles() {
   state.vehicles = [];
+  const pairs = pickStartingPairs(state.players.length);
   state.players.forEach((player, idx) => {
-    const pair = START_SETS[idx % START_SETS.length];
+    const pair = pairs[idx] || [];
     pair.forEach((startNode, vehicleIdx) => {
       const vehicle = createVehicle(player, vehicleIdx, startNode);
       state.vehicles.push(vehicle);
@@ -391,9 +576,9 @@ function setHint(text) {
 
 function defaultHint() {
   if (!state.running) return 'Выберите режим, чтобы начать новую партию.';
-  if (state.mode === 'solo') return 'Нажмите на маршрутку и протяните путь до цели.';
-  if (state.mode === 'local') return 'Игроки по очереди тянут маршруты и перетаскивают стопы на узлы.';
-  if (state.mode === 'online') return 'Планируйте маршрут и ждите свой ход — сервер irgri.uk синхронизирует партии.';
+  if (state.mode === 'solo') return 'Зажмите машину и протяните маршрут по узлам до цели.';
+  if (state.mode === 'local') return 'Игроки ведут линии от своих машин и перетаскивают стопы на узлы.';
+  if (state.mode === 'online') return 'Планируйте маршрут машин и ждите свой ход — сервер irgri.uk синхронизирует партии.';
   return '';
 }
 
@@ -530,7 +715,7 @@ function selectDefaultVehicle(ownerId) {
 
 function highlightVehicle(vehicle) {
   const target = vehicle.goalInfo?.label || vehicle.goal;
-  setHint(`Маршрутка №${vehicle.order}. Цель: ${target}.`);
+  setHint(`Машина №${vehicle.order}. Цель: ${target}.`);
 }
 
 function updateActionButtons() {
@@ -734,15 +919,17 @@ function getCanvasCoordinates(event) {
   if (!rect.width || !rect.height) {
     return { x: 0, y: 0 };
   }
-  const scaleX = MAP.width / rect.width;
-  const scaleY = MAP.height / rect.height;
+  const mapWidth = state.map?.width || MAP_BOUNDS.width;
+  const mapHeight = state.map?.height || MAP_BOUNDS.height;
+  const scaleX = mapWidth / rect.width;
+  const scaleY = mapHeight / rect.height;
   const clientX = event.clientX ?? 0;
   const clientY = event.clientY ?? 0;
   return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
 }
 
 function hitVehicle(x, y) {
-  const radius = 34;
+  const radius = 40;
   return state.vehicles.find((vehicle) => {
     const node = nodeById(vehicle.current);
     return distance({ x, y }, node) <= radius;
@@ -761,10 +948,12 @@ function updateRouteDrag(x, y) {
   const nearest = findNearestNode(x, y, 42);
   state.interaction.hoverNode = nearest ? nearest.id : null;
   if (!nearest) return;
+  const graph = state.graph;
+  if (!graph?.size) return;
   const path = state.interaction.path;
   const last = path[path.length - 1];
   if (nearest.id === last) return;
-  if (!graph.get(last).neighbors.has(nearest.id)) return;
+  if (!graph.get(last)?.neighbors.has(nearest.id)) return;
   if (path.length >= 2 && nearest.id === path[path.length - 2]) {
     path.pop();
     setHint('Шаг назад по маршруту.');
@@ -884,7 +1073,9 @@ function drawScene() {
   const pixelScale = view.pixelScale || window.devicePixelRatio || 1;
   ctx.save();
   ctx.setTransform(pixelScale, 0, 0, pixelScale, 0, 0);
-  ctx.clearRect(0, 0, MAP.width, MAP.height);
+  const mapWidth = state.map?.width || MAP_BOUNDS.width;
+  const mapHeight = state.map?.height || MAP_BOUNDS.height;
+  ctx.clearRect(0, 0, mapWidth, mapHeight);
   drawBackground();
   drawRoads();
   drawDestinations();
@@ -900,14 +1091,19 @@ function drawScene() {
 
 function drawBackground() {
   ctx.save();
-  ctx.fillStyle = '#bde0fe';
-  ctx.fillRect(0, 0, MAP.width, MAP.height);
-  ctx.fillStyle = '#d9f1ff';
+  const mapWidth = state.map?.width || MAP_BOUNDS.width;
+  const mapHeight = state.map?.height || MAP_BOUNDS.height;
+  const gradient = ctx.createLinearGradient(0, 0, 0, mapHeight);
+  gradient.addColorStop(0, '#f7fbff');
+  gradient.addColorStop(1, '#e3f2ff');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, mapWidth, mapHeight);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
   ctx.beginPath();
-  ctx.moveTo(60, 80);
-  ctx.bezierCurveTo(400, -40, 800, 40, 1120, 120);
-  ctx.lineTo(1120, 720);
-  ctx.bezierCurveTo(780, 760, 300, 700, 80, 680);
+  ctx.moveTo(mapWidth * 0.05, mapHeight * 0.15);
+  ctx.bezierCurveTo(mapWidth * 0.35, mapHeight * -0.05, mapWidth * 0.65, mapHeight * 0.1, mapWidth * 0.92, mapHeight * 0.2);
+  ctx.lineTo(mapWidth * 0.92, mapHeight * 0.85);
+  ctx.bezierCurveTo(mapWidth * 0.6, mapHeight * 0.95, mapWidth * 0.25, mapHeight * 0.9, mapWidth * 0.08, mapHeight * 0.8);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -915,41 +1111,53 @@ function drawBackground() {
 
 function drawRoads() {
   ctx.save();
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  for (const [a, b] of MAP.edges) {
+  const roadWidth = 38;
+  for (const [a, b] of state.map.edges || []) {
     const na = nodeById(a);
     const nb = nodeById(b);
-    ctx.strokeStyle = 'rgba(38, 68, 86, 0.08)';
-    ctx.lineWidth = 32;
+    if (!na || !nb) continue;
+    const angle = Math.atan2(nb.y - na.y, nb.x - na.x);
+    const length = distance(na, nb);
+    ctx.save();
+    ctx.translate(na.x, na.y);
+    ctx.rotate(angle);
+    ctx.fillStyle = '#1f2a37';
     ctx.beginPath();
-    ctx.moveTo(na.x, na.y);
-    ctx.lineTo(nb.x, nb.y);
-    ctx.stroke();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
-    ctx.lineWidth = 26;
+    ctx.roundRect(0, -roadWidth / 2 - 3, length, roadWidth + 6, roadWidth / 2);
+    ctx.fill();
+    ctx.fillStyle = '#2e3a48';
     ctx.beginPath();
-    ctx.moveTo(na.x, na.y);
-    ctx.lineTo(nb.x, nb.y);
-    ctx.stroke();
+    ctx.roundRect(0, -roadWidth / 2, length, roadWidth, roadWidth / 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    const dash = 28;
+    const gap = 18;
+    const stripeWidth = 4;
+    for (let offset = 12; offset < length - dash; offset += dash + gap) {
+      const segment = Math.min(dash, length - offset - gap * 0.5);
+      if (segment <= 0) break;
+      ctx.fillRect(offset, -stripeWidth / 2, segment, stripeWidth);
+    }
+    ctx.restore();
   }
   ctx.restore();
 }
 
 function drawDestinations() {
-  for (const dest of DELIVERY_POINTS) {
+  for (const dest of state.destinations) {
     const node = nodeById(dest.node);
+    if (!node) continue;
     ctx.save();
     ctx.translate(node.x, node.y);
     ctx.fillStyle = dest.color;
-    ctx.strokeStyle = 'rgba(38, 68, 86, 0.15)';
+    ctx.strokeStyle = 'rgba(38, 68, 86, 0.2)';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.roundRect(-20, -20, 40, 40, 12);
+    ctx.roundRect(-24, -24, 48, 48, 14);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.font = '20px Nunito';
+    ctx.font = '22px Nunito';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(dest.icon, 0, 2);
@@ -967,13 +1175,15 @@ function drawVehicleRoutes() {
       ? vehicle.history
       : [vehicle.current, ...vehicle.route];
     if (basePath.length < 2) continue;
+    const first = nodeById(basePath[0]);
+    if (!first) continue;
     ctx.strokeStyle = `${owner.color}cc`;
     ctx.lineWidth = 10;
     ctx.beginPath();
-    const first = nodeById(basePath[0]);
     ctx.moveTo(first.x, first.y);
     for (let i = 1; i < basePath.length; i += 1) {
       const node = nodeById(basePath[i]);
+      if (!node) continue;
       ctx.lineTo(node.x, node.y);
     }
     ctx.stroke();
@@ -1055,37 +1265,75 @@ function drawInteractionPreview() {
 function drawVehicles() {
   for (const vehicle of state.vehicles) {
     const node = nodeById(vehicle.current);
+    if (!node) continue;
+    let angle = 0;
+    if (vehicle.route?.length) {
+      const next = nodeById(vehicle.route[0]);
+      if (next) angle = Math.atan2(next.y - node.y, next.x - node.x);
+    } else if (vehicle.history?.length >= 2) {
+      const prev = nodeById(vehicle.history[vehicle.history.length - 2]);
+      if (prev) angle = Math.atan2(node.y - prev.y, node.x - prev.x);
+    }
     ctx.save();
     ctx.translate(node.x, node.y);
-    ctx.shadowColor = 'rgba(0,0,0,0.18)';
+    ctx.rotate(angle);
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.28)';
     ctx.shadowBlur = 12;
-    ctx.fillStyle = vehicle.color;
+    const baseColor = vehicle.color || '#3b82f6';
+    const darker = darkenColor(baseColor, 0.35);
+    const roof = lightenColor(baseColor, 0.25);
+    const bodyLength = 56;
+    const bodyWidth = 28;
+    const wheelWidth = 8;
+    const wheelHeight = bodyWidth + 8;
+
+    ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
+    ctx.fillRect(-bodyLength / 2 + 6, -wheelHeight / 2, wheelWidth, wheelHeight);
+    ctx.fillRect(bodyLength / 2 - wheelWidth - 6, -wheelHeight / 2, wheelWidth, wheelHeight);
+
+    ctx.fillStyle = darker;
     ctx.beginPath();
-    ctx.roundRect(-22, -22, 44, 44, 14);
+    ctx.roundRect(-bodyLength / 2, -bodyWidth / 2 - 3, bodyLength, bodyWidth + 6, bodyWidth / 2.1);
     ctx.fill();
+
     ctx.shadowBlur = 0;
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = baseColor;
     ctx.beginPath();
-    ctx.arc(-8, -4, 6, 0, Math.PI * 2);
-    ctx.arc(8, -4, 6, 0, Math.PI * 2);
+    ctx.roundRect(-bodyLength / 2, -bodyWidth / 2, bodyLength, bodyWidth, bodyWidth / 2.4);
     ctx.fill();
-    ctx.fillStyle = '#264456';
+
+    ctx.fillStyle = roof;
     ctx.beginPath();
-    ctx.arc(-8, -4, 3, 0, Math.PI * 2);
-    ctx.arc(8, -4, 3, 0, Math.PI * 2);
+    ctx.roundRect(-bodyLength / 2 + 8, -bodyWidth / 2 + 5, bodyLength - 16, bodyWidth - 10, bodyWidth / 3);
     ctx.fill();
-    ctx.fillStyle = '#fff';
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    const windowLength = (bodyLength - 24) / 2 - 4;
+    ctx.beginPath();
+    ctx.roundRect(-bodyLength / 2 + 10, -bodyWidth / 2 + 6, windowLength, bodyWidth - 12, 6);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.roundRect(-bodyLength / 2 + 14 + windowLength, -bodyWidth / 2 + 6, windowLength, bodyWidth - 12, 6);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255, 251, 235, 0.9)';
+    ctx.fillRect(bodyLength / 2 - 6, -6, 4, 6);
+    ctx.fillRect(bodyLength / 2 - 6, 0, 4, 6);
+
+    ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
     ctx.font = 'bold 16px Nunito';
-   ctx.textAlign = 'center';
+    ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(vehicle.order), 0, 16);
+    ctx.fillText(String(vehicle.order), -bodyLength / 2 + 14, 0);
+
     if (vehicle.id === state.selectedVehicleId) {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.roundRect(-26, -26, 52, 52, 18);
+      ctx.roundRect(-bodyLength / 2 - 6, -bodyWidth / 2 - 6, bodyLength + 12, bodyWidth + 12, bodyWidth / 2.2);
       ctx.stroke();
     }
+
     ctx.restore();
   }
 }
@@ -1095,12 +1343,13 @@ function drawNodes() {
   ctx.fillStyle = 'rgba(38, 68, 86, 0.7)';
   ctx.font = '14px Nunito';
   ctx.textAlign = 'center';
-  for (const node of MAP.nodes) {
+  ctx.textBaseline = 'middle';
+  for (const node of state.map.nodes) {
     ctx.beginPath();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-    ctx.strokeStyle = 'rgba(38, 68, 86, 0.25)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.strokeStyle = 'rgba(38, 68, 86, 0.3)';
     ctx.lineWidth = 2;
-    ctx.arc(node.x, node.y, 10, 0, Math.PI * 2);
+    ctx.arc(node.x, node.y, 9, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = 'rgba(38, 68, 86, 0.75)';
@@ -1341,6 +1590,9 @@ function setupModeSelection() {
   selectMode('solo');
 }
 function setupOnlineGame(payload) {
+  if (payload.map) {
+    setMap(payload.map, payload.destinations);
+  }
   state.running = true;
   state.turnLimit = payload.turnLimit || TURN_LIMIT;
   state.turn = payload.turn || 0;
@@ -1377,6 +1629,11 @@ function handleOnlineMessage(event) {
       elements.modeScreen.classList.remove('visible');
       break;
     case 'state':
+      if (data.payload.map) {
+        setMap(data.payload.map, data.payload.destinations);
+      } else if (Array.isArray(data.payload.destinations) && data.payload.destinations.length) {
+        state.destinations = data.payload.destinations.map((point) => ({ ...point }));
+      }
       state.turn = data.payload.turn;
       state.players = data.payload.players;
       state.vehicles = data.payload.vehicles;
