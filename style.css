@@ -300,6 +300,7 @@ canvas {
 .modal.hidden {
   pointer-events: none;
   opacity: 0;
+  visibility: hidden;
 }
 
 .modal.visible {

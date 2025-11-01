@@ -1022,6 +1022,7 @@ function setupModeSelection() {
   elements.btnStart.addEventListener('click', () => {
     if (!selectedMode) return;
     elements.modeScreen.classList.add('hidden');
+    elements.modeScreen.classList.remove('visible');
     if (selectedMode === 'solo') {
       startSoloGame();
     } else if (selectedMode === 'local') {
@@ -1069,6 +1070,7 @@ function handleOnlineMessage(event) {
     case 'start':
       setupOnlineGame(data.payload);
       elements.modeScreen.classList.add('hidden');
+      elements.modeScreen.classList.remove('visible');
       break;
     case 'state':
       state.turn = data.payload.turn;
@@ -1096,6 +1098,7 @@ function sendOnlineUpdate(payload) {
 function renderModeOverlay(message) {
   if (!state.running) {
     elements.modeScreen.classList.remove('hidden');
+    elements.modeScreen.classList.add('visible');
     setHint(message);
   }
 }
