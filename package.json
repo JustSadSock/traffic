@@ -1,7 +1,7 @@
 {
-  "name": "marshrut-chiki",
+  "name": "trafficity",
   "version": "1.0.0",
-  "description": "Обновлённый прототип игры \"Маршрутчики\" с режимами и сервером",
+  "description": "Trafficity — дуэль маршрутов с локальными и онлайн-режимами",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",

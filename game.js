@@ -76,6 +76,9 @@ const START_SETS = [
   ['K', 'G'],
 ];
 
+const ONLINE_HTTP = 'https://irgri.uk/';
+const ONLINE_WS = 'wss://irgri.uk/';
+
 const graph = buildGraph(MAP);
 
 const elements = {
@@ -83,9 +86,6 @@ const elements = {
   hint: document.getElementById('hint'),
   btnAdvance: document.getElementById('btnAdvance'),
   btnToggleNodes: document.getElementById('btnToggleNodes'),
-  btnRoute: document.getElementById('btnRoute'),
-  btnStop: document.getElementById('btnStop'),
-  btnCancel: document.getElementById('btnCancel'),
   vehicleList: document.getElementById('vehicleList'),
   log: document.getElementById('log'),
   turnLabel: document.getElementById('turnLabel'),
@@ -93,19 +93,9 @@ const elements = {
   modeScreen: document.getElementById('modeScreen'),
   modeExtra: document.getElementById('modeExtra'),
   btnStart: document.getElementById('btnStart'),
-  routeDialog: document.getElementById('routeDialog'),
-  routePreview: document.getElementById('routePreview'),
-  routeHint: document.getElementById('routeHint'),
-  routeLength: document.getElementById('routeLength'),
-  currentNode: document.getElementById('currentNode'),
-  targetNode: document.getElementById('targetNode'),
-  btnConfirmRoute: document.getElementById('btnConfirmRoute'),
-  btnCloseRoute: document.getElementById('btnCloseRoute'),
-  stopDialog: document.getElementById('stopDialog'),
   stopAmount: document.getElementById('stopAmount'),
   stopAmountLabel: document.getElementById('stopAmountLabel'),
-  btnApplyStop: document.getElementById('btnApplyStop'),
-  btnCloseStop: document.getElementById('btnCloseStop'),
+  stopHandle: document.getElementById('stopHandle'),
   scorePlayers: document.getElementById('scorePlayers'),
 };
 
@@ -122,12 +112,24 @@ const state = {
   turnLimit: TURN_LIMIT,
   log: [],
   hint: 'Выберите режим, чтобы начать игру.',
-  plannedRoute: null,
-  editingVehicle: null,
   localPlayerId: null,
   online: null,
   activePlayer: null,
   roomCode: null,
+  interaction: {
+    active: false,
+    type: null,
+    vehicleId: null,
+    path: [],
+    hoverNode: null,
+    pointerId: null,
+  },
+  stopDrag: {
+    active: false,
+    vehicleId: null,
+    amount: 1,
+    hoverNode: null,
+  },
 };
 
 function buildGraph(map) {
@@ -202,7 +204,7 @@ function createVehicle(player, index, startNode) {
     goalInfo: dest,
     route: [],
     waiting: 0,
-    pendingStop: 0,
+    stopOrders: {},
     stepsTaken: 0,
     history: [],
   };
@@ -218,7 +220,7 @@ function startSoloGame() {
   assignVehicles();
   autoPlanForAI();
   selectDefaultVehicle(human.id);
-  setHint('Выберите машину и запланируйте маршрут до цели.');
+  setHint('Нажмите на маршрутку и протяните путь до цели.');
   state.mode = 'solo';
   state.running = true;
   elements.btnAdvance.disabled = false;
@@ -234,7 +236,7 @@ function startLocalGame(names) {
   state.activePlayer = null;
   assignVehicles();
   selectDefaultVehicle(state.localPlayerId);
-  setHint('Каждый игрок строит маршруты для своих машин. Соревнуйтесь за доставку!');
+  setHint('Игроки тянут маршруты и ставят стопы, затем нажимают «Следующий ход».');
   state.mode = 'local';
   state.running = true;
   elements.btnAdvance.disabled = false;
@@ -245,11 +247,11 @@ function startOnlineGame(config) {
   resetState();
   state.mode = 'online';
   const { name, action, room } = config;
-  const socket = new WebSocket(`ws://${location.hostname}:3000`);
+  const socket = new WebSocket(ONLINE_WS);
   state.online = { socket, action, roomCode: room, name };
   state.roomCode = room;
   state.activePlayer = null;
-  setHint('Соединяемся с сервером...');
+  setHint('Соединяемся с irgri.uk...');
   socket.addEventListener('open', () => {
     socket.send(
       JSON.stringify({
@@ -275,15 +277,16 @@ function resetState() {
   state.turn = 0;
   state.log = [];
   state.hint = '';
-  state.plannedRoute = null;
-  state.editingVehicle = null;
   state.localPlayerId = null;
   state.online = null;
   state.activePlayer = null;
   state.showNodes = false;
   state.roomCode = null;
+  state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+  state.stopDrag = { active: false, vehicleId: null, amount: 1, hoverNode: null };
   elements.log.innerHTML = '';
   elements.btnToggleNodes.textContent = 'Показать узлы';
+  elements.stopHandle.disabled = true;
   updateHint();
 }
 
@@ -311,6 +314,7 @@ function planShortestRoute(vehicle) {
   const path = shortestPath(vehicle.current, vehicle.goal);
   if (path && path.length > 1) {
     vehicle.route = path.slice(1);
+    vehicle.history = path.slice();
   }
 }
 
@@ -322,9 +326,9 @@ function setHint(text) {
 
 function defaultHint() {
   if (!state.running) return 'Выберите режим, чтобы начать новую партию.';
-  if (state.mode === 'solo') return 'Выберите свою маршрутку и постройте путь до цели.';
-  if (state.mode === 'local') return 'Игроки по очереди планируют маршруты и нажимают «Следующий ход».';
-  if (state.mode === 'online') return 'Ждите свою очередь и обновления лобби.';
+  if (state.mode === 'solo') return 'Нажмите на маршрутку и протяните путь до цели.';
+  if (state.mode === 'local') return 'Игроки по очереди тянут маршруты и перетаскивают стопы на узлы.';
+  if (state.mode === 'online') return 'Планируйте маршрут и ждите свой ход — сервер irgri.uk синхронизирует партии.';
   return '';
 }
 
@@ -425,7 +429,19 @@ function renderVehicleList() {
     `;
     const status = document.createElement('div');
     status.className = 'vehicle-status';
-    status.textContent = vehicle.waiting > 0 ? `Ждёт ${vehicle.waiting}` : vehicle.route.length ? `${vehicle.route.length} узлов` : 'Ожидает';
+    const stops = vehicle.stopOrders || {};
+    let statusText = 'Ожидает';
+    if (vehicle.waiting > 0) {
+      statusText = `Стоит ${vehicle.waiting}`;
+    } else if (stops[vehicle.current]) {
+      statusText = `Стоп ${stops[vehicle.current]} ход(ов)`;
+    } else if (Object.keys(stops).length) {
+      const [nextNode, amount] = Object.entries(stops)[0];
+      statusText = `Стоп ${amount} на ${nextNode}`;
+    } else if (vehicle.route.length) {
+      statusText = `${vehicle.route.length} узлов`;
+    }
+    status.textContent = statusText;
     card.append(avatar, info, status);
     const selectable = owner?.type !== 'ai' || state.mode !== 'solo';
     card.disabled = !localPlayers.has(vehicle.ownerId) || !selectable;
@@ -455,9 +471,7 @@ function highlightVehicle(vehicle) {
 function updateActionButtons() {
   const vehicle = getSelectedVehicle();
   const canControl = vehicle && canControlVehicle(vehicle);
-  elements.btnRoute.disabled = !canControl;
-  elements.btnStop.disabled = !canControl;
-  elements.btnCancel.disabled = !state.editingVehicle && !state.plannedRoute;
+  elements.stopHandle.disabled = !canControl;
 }
 
 function canControlVehicle(vehicle) {
@@ -507,127 +521,464 @@ elements.btnToggleNodes.addEventListener('click', () => {
   elements.btnToggleNodes.textContent = state.showNodes ? 'Скрыть узлы' : 'Показать узлы';
 });
 
-elements.btnRoute.addEventListener('click', () => {
-  const vehicle = getSelectedVehicle();
-  if (!vehicle) return;
-  openRouteDialog(vehicle);
-});
-
-elements.btnStop.addEventListener('click', () => {
-  const vehicle = getSelectedVehicle();
-  if (!vehicle) return;
-  openStopDialog(vehicle);
-});
-
-elements.btnCancel.addEventListener('click', () => {
-  closeRouteDialog();
-  closeStopDialog();
-  state.plannedRoute = null;
-  state.editingVehicle = null;
-  updateActionButtons();
-});
-
-elements.btnCloseRoute.addEventListener('click', () => {
-  closeRouteDialog();
-});
-
-elements.btnConfirmRoute.addEventListener('click', () => {
-  if (!state.plannedRoute || !state.editingVehicle) return;
-  applyRoute();
-});
-
-elements.btnCloseStop.addEventListener('click', () => {
-  closeStopDialog();
-});
-
-elements.btnApplyStop.addEventListener('click', () => {
-  applyStop();
-});
-
 elements.stopAmount.addEventListener('input', () => {
   elements.stopAmountLabel.textContent = elements.stopAmount.value;
+  state.stopDrag.amount = Number(elements.stopAmount.value) || 1;
 });
 
 setupModeSelection();
 setupCanvasInteractions();
+setupStopDrag();
 renderLoop();
 updateUI();
 
-function openRouteDialog(vehicle) {
-  state.plannedRoute = [vehicle.current];
-  state.editingVehicle = vehicle;
-  elements.currentNode.textContent = vehicle.current;
-  elements.targetNode.textContent = vehicle.goal;
-  elements.routePreview.innerHTML = '';
-  elements.routeLength.textContent = '0';
-  elements.btnConfirmRoute.disabled = true;
-  elements.routeDialog.classList.remove('hidden');
-  setHint('Отметьте узлы на карте. Для отмены узла нажмите по нему в списке.');
+function setupStopDrag() {
+  elements.stopHandle.addEventListener('dragstart', handleStopDragStart);
+  elements.stopHandle.addEventListener('dragend', handleStopDragEnd);
+  elements.canvas.addEventListener('dragover', handleCanvasDragOver);
+  elements.canvas.addEventListener('dragleave', handleCanvasDragLeave);
+  elements.canvas.addEventListener('drop', handleCanvasDrop);
 }
 
-function closeRouteDialog() {
-  elements.routeDialog.classList.add('hidden');
-  state.plannedRoute = null;
-  state.editingVehicle = null;
-  updateActionButtons();
-  setHint('');
-}
-
-function openStopDialog(vehicle) {
-  state.editingVehicle = vehicle;
-  elements.stopAmount.value = '1';
-  elements.stopAmountLabel.textContent = '1';
-  elements.stopDialog.classList.remove('hidden');
-  setHint(`Маршрутка №${vehicle.order}: задержка на узле.`);
-}
-
-function closeStopDialog() {
-  elements.stopDialog.classList.add('hidden');
-  state.editingVehicle = null;
-  updateActionButtons();
-}
-
-function applyRoute() {
-  const vehicle = state.editingVehicle;
-  if (!vehicle) return;
-  const selected = state.plannedRoute;
-  if (state.mode === 'online') {
-    sendOnlineUpdate({ type: 'setRoute', vehicle: vehicle.id, path: selected });
-  } else {
-    vehicle.route = selected.slice(1);
-    vehicle.history = selected.slice();
-    logEvent(`${vehicle.label} меняет маршрут: ${selected.join(' → ')}.`);
+function handleStopDragStart(event) {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle || !canControlVehicle(vehicle)) {
+    event.preventDefault();
+    return;
   }
-  closeRouteDialog();
+  const amount = Number(elements.stopAmount.value) || 1;
+  state.stopDrag = { active: true, vehicleId: vehicle.id, amount, hoverNode: null };
+  event.dataTransfer.setData('text/plain', 'stop');
+  event.dataTransfer.effectAllowed = 'copy';
+  setHint(`Перетащите стоп на узел для ${vehicle.label}.`);
+}
+
+function handleStopDragEnd() {
+  state.stopDrag.hoverNode = null;
+  state.stopDrag.active = false;
+  state.stopDrag.vehicleId = null;
+  state.stopDrag.amount = Number(elements.stopAmount.value) || 1;
+  updateHint();
+}
+
+function handleCanvasDragOver(event) {
+  if (!state.stopDrag.active) return;
+  event.preventDefault();
+  const { x, y } = getCanvasCoordinates(event);
+  const nearest = findNearestNode(x, y, 40);
+  state.stopDrag.hoverNode = nearest ? nearest.id : null;
+  if (nearest) {
+    event.dataTransfer.dropEffect = 'copy';
+    setHint(`Стоп на узле ${nearest.id}. Отпустите, чтобы применить.`);
+  } else {
+    setHint('Перетащите жетон на узел дороги.');
+  }
+}
+
+function handleCanvasDragLeave() {
+  if (!state.stopDrag.active) return;
+  state.stopDrag.hoverNode = null;
+  updateHint();
+}
+
+function handleCanvasDrop(event) {
+  if (!state.stopDrag.active) return;
+  event.preventDefault();
+  const { hoverNode, vehicleId, amount } = state.stopDrag;
+  const vehicle = state.vehicles.find((v) => v.id === vehicleId);
+  if (!vehicle || !canControlVehicle(vehicle)) {
+    handleStopDragEnd();
+    return;
+  }
+  let nodeId = hoverNode;
+  if (!nodeId) {
+    const { x, y } = getCanvasCoordinates(event);
+    const nearest = findNearestNode(x, y, 40);
+    nodeId = nearest?.id || null;
+  }
+  if (!nodeId) {
+    setHint('Стоп можно ставить только на узлах.');
+    handleStopDragEnd();
+    return;
+  }
+  applyStopOrder(vehicle, nodeId, amount);
+  handleStopDragEnd();
+}
+
+function setupCanvasInteractions() {
+  elements.canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+  elements.canvas.addEventListener('pointermove', handleCanvasPointerMove);
+  elements.canvas.addEventListener('pointerup', handleCanvasPointerUp);
+  elements.canvas.addEventListener('pointerleave', handleCanvasPointerLeave);
+}
+
+function handleCanvasPointerDown(event) {
+  const coords = getCanvasCoordinates(event);
+  const vehicle = hitVehicle(coords.x, coords.y);
+  if (vehicle && canControlVehicle(vehicle)) {
+    if (state.selectedVehicleId !== vehicle.id) {
+      state.selectedVehicleId = vehicle.id;
+      renderVehicleList();
+      updateActionButtons();
+    }
+    highlightVehicle(vehicle);
+    startRouteDrag(event.pointerId, vehicle);
+    elements.canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    return;
+  }
+  const nearest = findNearestNode(coords.x, coords.y, 28);
+  if (nearest) {
+    selectVehicleFromMap(nearest.id);
+  }
+}
+
+function handleCanvasPointerMove(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  const coords = getCanvasCoordinates(event);
+  updateRouteDrag(coords.x, coords.y);
+}
+
+function handleCanvasPointerUp(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  finishRouteDrag();
+  if (elements.canvas.hasPointerCapture(event.pointerId)) {
+    elements.canvas.releasePointerCapture(event.pointerId);
+  }
+}
+
+function handleCanvasPointerLeave(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  const coords = getCanvasCoordinates(event);
+  updateRouteDrag(coords.x, coords.y);
+}
+
+function getCanvasCoordinates(event) {
+  const rect = elements.canvas.getBoundingClientRect();
+  const scaleX = elements.canvas.width / rect.width;
+  const scaleY = elements.canvas.height / rect.height;
+  const clientX = event.clientX ?? 0;
+  const clientY = event.clientY ?? 0;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+function hitVehicle(x, y) {
+  const radius = 34;
+  return state.vehicles.find((vehicle) => {
+    const node = nodeById(vehicle.current);
+    return distance({ x, y }, node) <= radius;
+  }) || null;
+}
+
+function startRouteDrag(pointerId, vehicle) {
+  state.interaction = { active: true, type: 'route', vehicleId: vehicle.id, path: [vehicle.current], hoverNode: null, pointerId };
+  setHint(`Ведите маршрут до цели ${vehicle.goal}.`);
+}
+
+function updateRouteDrag(x, y) {
+  if (!state.interaction.active || state.interaction.type !== 'route') return;
+  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
+  if (!vehicle) return;
+  const nearest = findNearestNode(x, y, 42);
+  state.interaction.hoverNode = nearest ? nearest.id : null;
+  if (!nearest) return;
+  const path = state.interaction.path;
+  const last = path[path.length - 1];
+  if (nearest.id === last) return;
+  if (!graph.get(last).neighbors.has(nearest.id)) return;
+  if (path.length >= 2 && nearest.id === path[path.length - 2]) {
+    path.pop();
+    setHint('Шаг назад по маршруту.');
+    return;
+  }
+  if (path.includes(nearest.id) && nearest.id !== vehicle.goal) {
+    setHint('Нельзя зациклить маршрут, кроме цели.');
+    return;
+  }
+  path.push(nearest.id);
+  if (nearest.id === vehicle.goal) {
+    setHint('Отпустите, чтобы подтвердить маршрут.');
+  } else {
+    setHint(`Продолжайте к цели ${vehicle.goal}.`);
+  }
+}
+
+function finishRouteDrag() {
+  if (!state.interaction.active || state.interaction.type !== 'route') {
+    state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+    return;
+  }
+  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
+  if (!vehicle) {
+    state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+    return;
+  }
+  const path = state.interaction.path;
+  const goalReached = path[path.length - 1] === vehicle.goal;
+  if (path.length > 1 && goalReached) {
+    commitRoute(vehicle, path);
+  } else {
+    setHint(`Маршрут не завершён. Дотяните до цели ${vehicle.goal}.`);
+  }
+  state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+}
+
+function commitRoute(vehicle, path, remote = false) {
+  if (state.mode === 'online' && !remote) {
+    sendOnlineUpdate({ type: 'setRoute', vehicle: vehicle.id, path });
+    setHint('Маршрут отправлен на сервер.');
+    return;
+  }
+  vehicle.route = path.slice(1);
+  vehicle.history = path.slice();
+  vehicle.waiting = 0;
+  logEvent(`${vehicle.label} меняет маршрут: ${path.join(' → ')}.`);
   updateUI();
 }
 
-function applyStop() {
-  const vehicle = state.editingVehicle;
-  if (!vehicle) return;
-  const amount = Number(elements.stopAmount.value) || 1;
-  if (state.mode === 'online') {
-    sendOnlineUpdate({ type: 'stop', vehicle: vehicle.id, amount });
-  } else {
-    vehicle.pendingStop += amount;
-    logEvent(`${vehicle.label} получит стоп на ${amount} ход(ов).`);
+function applyStopOrder(vehicle, nodeId, amount, remote = false) {
+  if (state.mode === 'online' && !remote) {
+    sendOnlineUpdate({ type: 'stop', vehicle: vehicle.id, node: nodeId, amount });
+    setHint('Стоп отправлен на сервер.');
+    return;
   }
-  closeStopDialog();
+  if (!vehicle.stopOrders) vehicle.stopOrders = {};
+  vehicle.stopOrders[nodeId] = amount;
+  logEvent(`${vehicle.label} поставит стоп на узле ${nodeId} (${amount} ход(ов)).`);
+  updateUI();
+}
+
+function setupStopDrag() {
+  elements.stopHandle.addEventListener('dragstart', handleStopDragStart);
+  elements.stopHandle.addEventListener('dragend', handleStopDragEnd);
+  elements.canvas.addEventListener('dragover', handleCanvasDragOver);
+  elements.canvas.addEventListener('dragleave', handleCanvasDragLeave);
+  elements.canvas.addEventListener('drop', handleCanvasDrop);
+}
+
+function handleStopDragStart(event) {
+  const vehicle = getSelectedVehicle();
+  if (!vehicle || !canControlVehicle(vehicle)) {
+    event.preventDefault();
+    return;
+  }
+  const amount = Number(elements.stopAmount.value) || 1;
+  state.stopDrag = { active: true, vehicleId: vehicle.id, amount, hoverNode: null };
+  event.dataTransfer.setData('text/plain', 'stop');
+  event.dataTransfer.effectAllowed = 'copy';
+  setHint(`Перетащите стоп на узел для ${vehicle.label}.`);
+}
+
+function handleStopDragEnd() {
+  state.stopDrag.hoverNode = null;
+  state.stopDrag.active = false;
+  state.stopDrag.vehicleId = null;
+  state.stopDrag.amount = Number(elements.stopAmount.value) || 1;
+  updateHint();
+}
+
+function handleCanvasDragOver(event) {
+  if (!state.stopDrag.active) return;
+  event.preventDefault();
+  const { x, y } = getCanvasCoordinates(event);
+  const nearest = findNearestNode(x, y, 40);
+  state.stopDrag.hoverNode = nearest ? nearest.id : null;
+  if (nearest) {
+    event.dataTransfer.dropEffect = 'copy';
+    setHint(`Стоп на узле ${nearest.id}. Отпустите, чтобы применить.`);
+  } else {
+    setHint('Перетащите жетон на узел дороги.');
+  }
+}
+
+function handleCanvasDragLeave() {
+  if (!state.stopDrag.active) return;
+  state.stopDrag.hoverNode = null;
+  updateHint();
+}
+
+function handleCanvasDrop(event) {
+  if (!state.stopDrag.active) return;
+  event.preventDefault();
+  const { hoverNode, vehicleId, amount } = state.stopDrag;
+  const vehicle = state.vehicles.find((v) => v.id === vehicleId);
+  if (!vehicle || !canControlVehicle(vehicle)) {
+    handleStopDragEnd();
+    return;
+  }
+  let nodeId = hoverNode;
+  if (!nodeId) {
+    const { x, y } = getCanvasCoordinates(event);
+    const nearest = findNearestNode(x, y, 40);
+    nodeId = nearest ? nearest.id : null;
+  }
+  if (!nodeId) {
+    setHint('Стоп можно ставить только на узлах.');
+    handleStopDragEnd();
+    return;
+  }
+  applyStopOrder(vehicle, nodeId, amount);
+  handleStopDragEnd();
+}
+
+function setupCanvasInteractions() {
+  elements.canvas.addEventListener('pointerdown', handleCanvasPointerDown);
+  elements.canvas.addEventListener('pointermove', handleCanvasPointerMove);
+  elements.canvas.addEventListener('pointerup', handleCanvasPointerUp);
+  elements.canvas.addEventListener('pointerleave', handleCanvasPointerLeave);
+}
+
+function handleCanvasPointerDown(event) {
+  const coords = getCanvasCoordinates(event);
+  const vehicle = hitVehicle(coords.x, coords.y);
+  if (vehicle && canControlVehicle(vehicle)) {
+    if (state.selectedVehicleId !== vehicle.id) {
+      state.selectedVehicleId = vehicle.id;
+      renderVehicleList();
+      updateActionButtons();
+    }
+    highlightVehicle(vehicle);
+    startRouteDrag(event.pointerId, vehicle);
+    elements.canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    return;
+  }
+  const nearest = findNearestNode(coords.x, coords.y, 28);
+  if (nearest) {
+    selectVehicleFromMap(nearest.id);
+  }
+}
+
+function handleCanvasPointerMove(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  const coords = getCanvasCoordinates(event);
+  updateRouteDrag(coords.x, coords.y);
+}
+
+function handleCanvasPointerUp(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  finishRouteDrag();
+  if (elements.canvas.hasPointerCapture(event.pointerId)) {
+    elements.canvas.releasePointerCapture(event.pointerId);
+  }
+}
+
+function handleCanvasPointerLeave(event) {
+  if (!state.interaction.active || state.interaction.pointerId !== event.pointerId) return;
+  const coords = getCanvasCoordinates(event);
+  updateRouteDrag(coords.x, coords.y);
+}
+
+function getCanvasCoordinates(event) {
+  const rect = elements.canvas.getBoundingClientRect();
+  const scaleX = elements.canvas.width / rect.width;
+  const scaleY = elements.canvas.height / rect.height;
+  const clientX = event.clientX ?? 0;
+  const clientY = event.clientY ?? 0;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+function hitVehicle(x, y) {
+  const radius = 34;
+  return state.vehicles.find((vehicle) => {
+    const node = nodeById(vehicle.current);
+    return distance({ x, y }, node) <= radius;
+  }) || null;
+}
+
+function startRouteDrag(pointerId, vehicle) {
+  state.interaction = { active: true, type: 'route', vehicleId: vehicle.id, path: [vehicle.current], hoverNode: null, pointerId };
+  setHint(`Ведите маршрут до цели ${vehicle.goal}.`);
+}
+
+function updateRouteDrag(x, y) {
+  if (!state.interaction.active || state.interaction.type !== 'route') return;
+  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
+  if (!vehicle) return;
+  const nearest = findNearestNode(x, y, 42);
+  state.interaction.hoverNode = nearest ? nearest.id : null;
+  if (!nearest) return;
+  const path = state.interaction.path;
+  const last = path[path.length - 1];
+  if (nearest.id === last) return;
+  if (!graph.get(last).neighbors.has(nearest.id)) return;
+  if (path.length >= 2 && nearest.id === path[path.length - 2]) {
+    path.pop();
+    setHint('Шаг назад по маршруту.');
+    return;
+  }
+  if (path.includes(nearest.id) && nearest.id !== vehicle.goal) {
+    setHint('Нельзя зациклить маршрут, кроме цели.');
+    return;
+  }
+  path.push(nearest.id);
+  if (nearest.id === vehicle.goal) {
+    setHint('Отпустите, чтобы подтвердить маршрут.');
+  } else {
+    setHint(`Продолжайте к цели ${vehicle.goal}.`);
+  }
+}
+
+function finishRouteDrag() {
+  if (!state.interaction.active || state.interaction.type !== 'route') {
+    state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+    return;
+  }
+  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
+  if (!vehicle) {
+    state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+    return;
+  }
+  const path = state.interaction.path;
+  const goalReached = path[path.length - 1] === vehicle.goal;
+  if (path.length > 1 && goalReached) {
+    commitRoute(vehicle, path);
+  } else {
+    setHint(`Маршрут не завершён. Дотяните до цели ${vehicle.goal}.`);
+  }
+  state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+}
+
+function commitRoute(vehicle, path, remote = false) {
+  if (state.mode === 'online' && !remote) {
+    sendOnlineUpdate({ type: 'setRoute', vehicle: vehicle.id, path });
+    setHint('Маршрут отправлен на сервер.');
+    return;
+  }
+  vehicle.route = path.slice(1);
+  vehicle.history = path.slice();
+  vehicle.waiting = 0;
+  logEvent(`${vehicle.label} меняет маршрут: ${path.join(' → ')}.`);
+  updateUI();
+}
+
+function applyStopOrder(vehicle, nodeId, amount, remote = false) {
+  if (state.mode === 'online' && !remote) {
+    sendOnlineUpdate({ type: 'stop', vehicle: vehicle.id, node: nodeId, amount });
+    setHint('Стоп отправлен на сервер.');
+    return;
+  }
+  if (!vehicle.stopOrders) vehicle.stopOrders = {};
+  vehicle.stopOrders[nodeId] = amount;
+  logEvent(`${vehicle.label} поставит стоп на узле ${nodeId} (${amount} ход(ов)).`);
+  updateUI();
 }
 
 function processVehicleTurn(vehicle) {
-  if (vehicle.pendingStop > 0) {
-    vehicle.waiting += vehicle.pendingStop;
-    logEvent(`${vehicle.label} готовится стоять ${vehicle.pendingStop} ход(ов).`);
-    vehicle.pendingStop = 0;
-  }
   if (vehicle.waiting > 0) {
     vehicle.waiting -= 1;
     logEvent(`${vehicle.label} ожидает на узле ${vehicle.current}.`);
     return;
   }
+  const plannedStop = vehicle.stopOrders ? vehicle.stopOrders[vehicle.current] : undefined;
+  if (plannedStop) {
+    vehicle.waiting = plannedStop - 1;
+    delete vehicle.stopOrders[vehicle.current];
+    logEvent(`${vehicle.label} держит стоп на узле ${vehicle.current} (${plannedStop} ход(ов)).`);
+    return;
+  }
   if (!vehicle.route.length) {
-    logEvent(`${vehicle.label} без маршрута.`);
+    logEvent(`${vehicle.label} ждёт новый маршрут.`);
     return;
   }
   const next = vehicle.route.shift();
@@ -647,6 +998,8 @@ function handleArrival(vehicle) {
   owner.score += gained;
   logEvent(`${vehicle.label} достиг цели ${vehicle.goalInfo?.label || vehicle.goal} и заработал ${gained} очков!`);
   vehicle.stepsTaken = 0;
+  vehicle.stopOrders = {};
+  vehicle.waiting = 0;
   const nextDest = randomDestination(vehicle.goal);
   vehicle.goal = nextDest.node;
   vehicle.goalInfo = nextDest;
@@ -659,103 +1012,6 @@ function handleArrival(vehicle) {
   }
 }
 
-function logEndOfTurn() {
-  logEvent(`— Ход ${state.turn} завершён —`);
-}
-
-function checkEndGame() {
-  if (state.turn >= state.turnLimit) {
-    state.running = false;
-    elements.btnAdvance.disabled = true;
-    const winner = [...state.players].sort((a, b) => b.score - a.score)[0];
-    setHint(`Партия завершена. Победитель: ${winner.name} (${winner.score} очков).`);
-    logEvent(`Игра закончена. Победил ${winner.name}.`);
-    if (state.mode === 'online') {
-      sendOnlineUpdate({ type: 'gameOver' });
-    }
-  }
-}
-
-function setupCanvasInteractions() {
-  elements.canvas.addEventListener('click', (event) => {
-    const rect = elements.canvas.getBoundingClientRect();
-    const scaleX = elements.canvas.width / rect.width;
-    const scaleY = elements.canvas.height / rect.height;
-    const x = (event.clientX - rect.left) * scaleX;
-    const y = (event.clientY - rect.top) * scaleY;
-    const nearest = findNearestNode(x, y, 32);
-    if (!nearest) return;
-    if (state.routeDialog.classList.contains('hidden')) {
-      selectVehicleFromMap(nearest.id);
-    } else {
-      extendRoute(nearest.id);
-    }
-  });
-}
-
-function findNearestNode(x, y, radius) {
-  let best = null;
-  let bestDist = radius;
-  for (const node of MAP.nodes) {
-    const d = distance({ x, y }, node);
-    if (d <= bestDist) {
-      best = node;
-      bestDist = d;
-    }
-  }
-  return best;
-}
-
-function selectVehicleFromMap(nodeId) {
-  const controllable = state.vehicles.filter((v) => canControlVehicle(v));
-  const located = controllable.find((v) => v.current === nodeId);
-  if (located) {
-    state.selectedVehicleId = located.id;
-    renderVehicleList();
-    updateActionButtons();
-    highlightVehicle(located);
-  }
-}
-
-function extendRoute(nodeId) {
-  if (!state.plannedRoute) return;
-  const vehicle = state.editingVehicle;
-  const last = state.plannedRoute[state.plannedRoute.length - 1];
-  if (!graph.get(last).neighbors.has(nodeId)) {
-    setHint('Между узлами нет дороги.');
-    return;
-  }
-  if (state.plannedRoute.includes(nodeId) && nodeId !== vehicle.goal) {
-    setHint('Маршрут не может зацикливаться, кроме цели.');
-    return;
-  }
-  state.plannedRoute.push(nodeId);
-  refreshRoutePreview();
-  if (nodeId === vehicle.goal) {
-    setHint('Маршрут готов. Нажмите «Применить».');
-    elements.btnConfirmRoute.disabled = false;
-  } else {
-    setHint('Добавьте узлы до цели.');
-  }
-}
-
-function refreshRoutePreview() {
-  elements.routePreview.innerHTML = '';
-  state.plannedRoute.forEach((nodeId, idx) => {
-    const item = document.createElement('li');
-    item.textContent = nodeId;
-    item.addEventListener('click', () => {
-      if (idx === 0) return;
-      state.plannedRoute = state.plannedRoute.slice(0, idx + 1);
-      refreshRoutePreview();
-      elements.routeLength.textContent = String(state.plannedRoute.length - 1);
-      elements.btnConfirmRoute.disabled = state.plannedRoute[state.plannedRoute.length - 1] !== state.editingVehicle.goal;
-    });
-    elements.routePreview.appendChild(item);
-  });
-  elements.routeLength.textContent = String(state.plannedRoute.length - 1);
-}
-
 function renderLoop() {
   drawScene();
   requestAnimationFrame(renderLoop);
@@ -766,7 +1022,9 @@ function drawScene() {
   drawBackground();
   drawRoads();
   drawDestinations();
+  drawStopOrders();
   drawVehicleRoutes();
+  drawInteractionPreview();
   drawVehicles();
   if (state.showNodes || !state.running || !state.mode) {
     drawNodes();
@@ -836,21 +1094,93 @@ function drawVehicleRoutes() {
   ctx.save();
   ctx.lineCap = 'round';
   for (const vehicle of state.vehicles) {
-    if (!vehicle.route.length) continue;
     const owner = state.players.find((p) => p.id === vehicle.ownerId);
     if (!owner) continue;
+    const basePath = Array.isArray(vehicle.history) && vehicle.history.length
+      ? vehicle.history
+      : [vehicle.current, ...vehicle.route];
+    if (basePath.length < 2) continue;
     ctx.strokeStyle = `${owner.color}cc`;
     ctx.lineWidth = 10;
     ctx.beginPath();
-    const start = nodeById(vehicle.current);
-    ctx.moveTo(start.x, start.y);
-    let prev = start;
-    for (const nodeId of vehicle.route) {
-      const node = nodeById(nodeId);
+    const first = nodeById(basePath[0]);
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < basePath.length; i += 1) {
+      const node = nodeById(basePath[i]);
       ctx.lineTo(node.x, node.y);
-      prev = node;
     }
     ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawStopOrders() {
+  ctx.save();
+  for (const vehicle of state.vehicles) {
+    const owner = state.players.find((p) => p.id === vehicle.ownerId);
+    if (!owner) continue;
+    const stops = vehicle.stopOrders ? Object.entries(vehicle.stopOrders) : [];
+    for (const [nodeId, amount] of stops) {
+      const node = nodeById(nodeId);
+      if (!node) continue;
+      ctx.fillStyle = `${owner.color}40`;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `${owner.color}80`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, 18, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 12px Nunito';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`×${amount}`, node.x, node.y);
+    }
+  }
+  if (state.stopDrag.active && state.stopDrag.hoverNode) {
+    const node = nodeById(state.stopDrag.hoverNode);
+    if (node) {
+      ctx.strokeStyle = 'rgba(34, 66, 90, 0.35)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, 24, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  ctx.restore();
+}
+
+function drawInteractionPreview() {
+  if (!state.interaction.active || state.interaction.type !== 'route') return;
+  const vehicle = state.vehicles.find((v) => v.id === state.interaction.vehicleId);
+  if (!vehicle) return;
+  const owner = state.players.find((p) => p.id === vehicle.ownerId);
+  const path = state.interaction.path;
+  if (!path || path.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = `${owner?.color || '#264456'}aa`;
+  ctx.lineWidth = 8;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  const start = nodeById(path[0]);
+  ctx.moveTo(start.x, start.y);
+  for (let i = 1; i < path.length; i += 1) {
+    const node = nodeById(path[i]);
+    ctx.lineTo(node.x, node.y);
+  }
+  ctx.stroke();
+  if (state.interaction.hoverNode) {
+    const hover = nodeById(state.interaction.hoverNode);
+    if (hover) {
+      ctx.fillStyle = `${owner?.color || '#264456'}55`;
+      ctx.beginPath();
+      ctx.arc(hover.x, hover.y, 16, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.restore();
 }
@@ -910,6 +1240,24 @@ function drawNodes() {
     ctx.fillText(node.id, node.x, node.y - 16);
   }
   ctx.restore();
+}
+
+function logEndOfTurn() {
+  logEvent(`Ход ${state.turn} завершён.`);
+}
+
+function checkEndGame() {
+  if (state.turn < state.turnLimit) return;
+  state.running = false;
+  elements.btnAdvance.disabled = true;
+  const sorted = [...state.players].sort((a, b) => b.score - a.score);
+  const winner = sorted[0];
+  const message = winner
+    ? `Партия завершена. Победитель: ${winner.name} (${winner.score} очков).`
+    : 'Партия завершена.';
+  logEvent(message);
+  setHint(message);
+  renderModeOverlay(message);
 }
 
 function setupModeSelection() {
@@ -1048,6 +1396,8 @@ function setupOnlineGame(payload) {
   state.activePlayer = payload.active || null;
   elements.btnAdvance.disabled = payload.active !== payload.you;
   state.selectedVehicleId = null;
+  state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+  state.stopDrag = { active: false, vehicleId: null, amount: Number(elements.stopAmount.value) || 1, hoverNode: null };
   selectDefaultVehicle(state.localPlayerId);
   setHint(payload.message || 'Подождите свой ход.');
   updateUI();
@@ -1079,6 +1429,8 @@ function handleOnlineMessage(event) {
       state.activePlayer = data.payload.active || null;
       state.turnLimit = data.payload.turnLimit || state.turnLimit;
       state.running = true;
+      state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
+      state.stopDrag = { active: false, vehicleId: null, amount: Number(elements.stopAmount.value) || 1, hoverNode: null };
       elements.btnAdvance.disabled = data.payload.active !== state.localPlayerId;
       setHint(data.payload.message);
       if (data.payload.message) logEvent(data.payload.message);

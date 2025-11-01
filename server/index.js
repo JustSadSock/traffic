@@ -147,7 +147,7 @@ function createVehicle(player, index, startNode) {
     goalInfo: dest,
     route: [],
     waiting: 0,
-    pendingStop: 0,
+    stopOrders: {},
     stepsTaken: 0,
     history: [],
   };
@@ -175,7 +175,7 @@ function serializeVehicles(room) {
     goalInfo: vehicle.goalInfo,
     route: vehicle.route.slice(),
     waiting: vehicle.waiting,
-    pendingStop: vehicle.pendingStop,
+    stopOrders: Object.fromEntries(Object.entries(vehicle.stopOrders || {})),
     stepsTaken: vehicle.stepsTaken,
     history: vehicle.history.slice(),
   }));
@@ -330,23 +330,30 @@ function applyRoute(room, payload) {
 function applyStop(room, payload) {
   const vehicle = vehicleById(room, payload.vehicle);
   if (!vehicle) return { ok: false, message: 'Маршрутка не найдена' };
+  const node = typeof payload.node === 'string' ? payload.node : null;
+  if (!node || !graph.has(node)) {
+    return { ok: false, message: 'Узел не найден' };
+  }
   const amount = Math.max(1, Math.min(5, Number(payload.amount) || 1));
-  vehicle.pendingStop += amount;
-  return { ok: true, message: `${vehicle.label} задержится на ${amount} ход(ов).` };
+  if (!vehicle.stopOrders) vehicle.stopOrders = {};
+  vehicle.stopOrders[node] = amount;
+  return { ok: true, message: `${vehicle.label} поставит стоп на узле ${node} (${amount} ход(ов)).` };
 }
 
 function advanceRoom(room) {
   room.turn += 1;
   const events = [];
   for (const vehicle of room.vehicles) {
-    if (vehicle.pendingStop > 0) {
-      vehicle.waiting += vehicle.pendingStop;
-      events.push(`${vehicle.label} запланировал ожидание на ${vehicle.pendingStop} ход(ов).`);
-      vehicle.pendingStop = 0;
-    }
     if (vehicle.waiting > 0) {
       vehicle.waiting -= 1;
       events.push(`${vehicle.label} стоит на узле ${vehicle.current}.`);
+      continue;
+    }
+    const plannedStop = vehicle.stopOrders ? vehicle.stopOrders[vehicle.current] : undefined;
+    if (plannedStop) {
+      vehicle.waiting = plannedStop - 1;
+      delete vehicle.stopOrders[vehicle.current];
+      events.push(`${vehicle.label} держит стоп на узле ${vehicle.current} (${plannedStop} ход(ов)).`);
       continue;
     }
     if (!vehicle.route.length) {
@@ -389,6 +396,8 @@ function handleArrival(room, vehicle, events) {
   vehicle.goalInfo = dest;
   vehicle.route = [];
   vehicle.history = [];
+  vehicle.waiting = 0;
+  vehicle.stopOrders = {};
 }
 
 function broadcastState(room, message) {
@@ -514,5 +523,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Маршрутчики слушают на http://localhost:${PORT}`);
+  console.log(`Trafficity слушает на http://localhost:${PORT}`);
 });
