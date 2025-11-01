@@ -253,6 +253,10 @@ canvas {
   box-shadow: 0 14px 26px -20px rgba(255, 155, 189, 0.5);
 }
 
+.vehicle-card.readonly {
+  opacity: 0.75;
+}
+
 .vehicle-card:disabled {
   opacity: 0.55;
 }

@@ -3,6 +3,8 @@ const PLAYER_COLORS = ['#ff8ba7', '#70d6ff', '#ffd166', '#6ef2a5'];
 const VEHICLE_EMOJIS = ['①', '②'];
 
 const MAP_BOUNDS = { width: 1200, height: 780 };
+const ROAD_WIDTH = 38;
+const VEHICLE_LANE_OFFSET = ROAD_WIDTH * 0.18;
 const DESTINATION_THEMES = [
   { label: 'Парк светлячков', color: '#8bd3dd', icon: '🌿' },
   { label: 'Ванильная кофейня', color: '#ffd6a5', icon: '☕' },
@@ -97,35 +99,79 @@ function shuffle(array) {
 function generateCityMap() {
   const width = MAP_BOUNDS.width;
   const height = MAP_BOUNDS.height;
-  const cols = 6;
-  const rows = 4;
-  const marginX = 120;
-  const marginY = 120;
+  const cols = 7;
+  const rows = 5;
+  const marginX = 80;
+  const marginY = 90;
   const stepX = (width - marginX * 2) / (cols - 1);
   const stepY = (height - marginY * 2) / (rows - 1);
   const nodes = [];
   const adjacency = new Map();
+  const nodeMap = new Map();
   let idCounter = 1;
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const id = `N${idCounter.toString().padStart(2, '0')}`;
       idCounter += 1;
-      const jitterX = randomBetween(-stepX * 0.35, stepX * 0.35);
-      const jitterY = randomBetween(-stepY * 0.35, stepY * 0.35);
+      const jitterX = randomBetween(-stepX * 0.25, stepX * 0.25);
+      const jitterY = randomBetween(-stepY * 0.25, stepY * 0.25);
       const x = marginX + col * stepX + jitterX;
       const y = marginY + row * stepY + jitterY;
-      nodes.push({ id, x, y });
+      const node = { id, x, y };
+      nodes.push(node);
       adjacency.set(id, new Set());
+      nodeMap.set(id, node);
     }
   }
 
   const edges = [];
   const edgeSet = new Set();
 
+  const EPSILON = 1e-6;
+  const orientation = (p, q, r) => {
+    const val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+    if (Math.abs(val) < EPSILON) return 0;
+    return val > 0 ? 1 : 2;
+  };
+  const onSegment = (p, q, r) =>
+    Math.min(p.x, r.x) - EPSILON <= q.x &&
+    q.x <= Math.max(p.x, r.x) + EPSILON &&
+    Math.min(p.y, r.y) - EPSILON <= q.y &&
+    q.y <= Math.max(p.y, r.y) + EPSILON;
+  const segmentsIntersect = (p1, p2, p3, p4) => {
+    const o1 = orientation(p1, p2, p3);
+    const o2 = orientation(p1, p2, p4);
+    const o3 = orientation(p3, p4, p1);
+    const o4 = orientation(p3, p4, p2);
+    if (o1 !== o2 && o3 !== o4) return true;
+    if (o1 === 0 && onSegment(p1, p3, p2)) return true;
+    if (o2 === 0 && onSegment(p1, p4, p2)) return true;
+    if (o3 === 0 && onSegment(p3, p1, p4)) return true;
+    if (o4 === 0 && onSegment(p3, p2, p4)) return true;
+    return false;
+  };
+
+  const wouldCross = (aId, bId) => {
+    const pa = nodeMap.get(aId);
+    const pb = nodeMap.get(bId);
+    if (!pa || !pb) return true;
+    for (const [cId, dId] of edges) {
+      if (aId === cId || aId === dId || bId === cId || bId === dId) continue;
+      const pc = nodeMap.get(cId);
+      const pd = nodeMap.get(dId);
+      if (!pc || !pd) continue;
+      if (segmentsIntersect(pa, pb, pc, pd)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const addEdge = (a, b) => {
     if (!a || !b || a === b) return;
     const key = a < b ? `${a}-${b}` : `${b}-${a}`;
     if (edgeSet.has(key)) return;
+    if (wouldCross(a, b)) return;
     edgeSet.add(key);
     edges.push([a, b]);
     adjacency.get(a)?.add(b);
@@ -144,24 +190,37 @@ function generateCityMap() {
       if (row < rows - 1) {
         addEdge(current.id, nodes[indexOf(row + 1, col)]?.id);
       }
-      if (row < rows - 1 && col < cols - 1 && Math.random() < 0.55) {
+      if (row < rows - 1 && col < cols - 1 && Math.random() < 0.6) {
         addEdge(current.id, nodes[indexOf(row + 1, col + 1)]?.id);
       }
-      if (row < rows - 1 && col > 0 && Math.random() < 0.35) {
+      if (row < rows - 1 && col > 0 && Math.random() < 0.45) {
         addEdge(current.id, nodes[indexOf(row + 1, col - 1)]?.id);
       }
     }
   }
 
-  const typicalSpan = Math.hypot(stepX, stepY) * 1.4;
-  const extras = Math.floor(nodes.length * 1.5);
+  const typicalSpan = Math.hypot(stepX, stepY) * 1.2;
+  const extras = Math.floor(nodes.length * 2.4);
   for (let i = 0; i < extras; i += 1) {
     const a = nodes[Math.floor(Math.random() * nodes.length)];
     if (!a) continue;
-    const candidates = nodes.filter((node) => node.id !== a.id && distance(node, a) <= typicalSpan * randomBetween(0.7, 1.6));
+    const radius = typicalSpan * randomBetween(0.6, 1.5);
+    const candidates = nodes
+      .filter((node) => node.id !== a.id && distance(node, a) <= radius)
+      .sort((node1, node2) => distance(node1, a) - distance(node2, a));
     if (!candidates.length) continue;
     const b = candidates[Math.floor(Math.random() * candidates.length)];
     addEdge(a.id, b.id);
+  }
+
+  for (const node of nodes) {
+    const potentials = nodes
+      .filter((other) => other.id !== node.id && !adjacency.get(node.id)?.has(other.id))
+      .sort((a, b) => distance(a, node) - distance(b, node))
+      .slice(0, 3);
+    for (const candidate of potentials) {
+      addEdge(node.id, candidate.id);
+    }
   }
 
   const buildComponents = () => {
@@ -650,15 +709,6 @@ function renderScores() {
 
 function renderVehicleList() {
   elements.vehicleList.innerHTML = '';
-  const localPlayers = new Set();
-  if (state.mode === 'solo') {
-    localPlayers.add(state.localPlayerId);
-  } else if (state.mode === 'local') {
-    state.players.forEach((p) => localPlayers.add(p.id));
-  } else if (state.mode === 'online' && state.localPlayerId) {
-    localPlayers.add(state.localPlayerId);
-  }
-
   for (const vehicle of state.vehicles) {
     const card = document.createElement('button');
     card.type = 'button';
@@ -693,8 +743,11 @@ function renderVehicleList() {
     }
     status.textContent = statusText;
     card.append(avatar, info, status);
-    const selectable = owner?.type !== 'ai' || state.mode !== 'solo';
-    card.disabled = !localPlayers.has(vehicle.ownerId) || !selectable;
+    const controllable = canControlVehicle(vehicle);
+    if (!controllable) {
+      card.classList.add('readonly');
+    }
+    card.disabled = false;
     card.addEventListener('click', () => {
       state.selectedVehicleId = vehicle.id;
       updateActionButtons();
@@ -876,22 +929,33 @@ function setupCanvasInteractions() {
 function handleCanvasPointerDown(event) {
   const coords = getCanvasCoordinates(event);
   const vehicle = hitVehicle(coords.x, coords.y);
-  if (vehicle && canControlVehicle(vehicle)) {
-    if (state.selectedVehicleId !== vehicle.id) {
+  if (vehicle) {
+    const wasSelected = state.selectedVehicleId === vehicle.id;
+    if (!wasSelected) {
       state.selectedVehicleId = vehicle.id;
       renderVehicleList();
       updateActionButtons();
     }
     highlightVehicle(vehicle);
-    startRouteDrag(event.pointerId, vehicle);
-    elements.canvas.setPointerCapture(event.pointerId);
-    event.preventDefault();
+    if (canControlVehicle(vehicle)) {
+      startRouteDrag(event.pointerId, vehicle);
+      elements.canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    }
     return;
   }
   const nearest = findNearestNode(coords.x, coords.y, 28);
-  if (nearest) {
-    selectVehicleFromMap(nearest.id);
+  if (!nearest) return;
+  const selected = getSelectedVehicle();
+  if (selected && canControlVehicle(selected)) {
+    const started = startRouteDragFromNode(event.pointerId, selected, nearest.id);
+    if (started) {
+      elements.canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
   }
+  selectVehicleFromMap(nearest.id);
 }
 
 function handleCanvasPointerMove(event) {
@@ -929,16 +993,56 @@ function getCanvasCoordinates(event) {
 }
 
 function hitVehicle(x, y) {
-  const radius = 40;
+  const radius = 30;
   return state.vehicles.find((vehicle) => {
     const node = nodeById(vehicle.current);
     return distance({ x, y }, node) <= radius;
   }) || null;
 }
 
-function startRouteDrag(pointerId, vehicle) {
-  state.interaction = { active: true, type: 'route', vehicleId: vehicle.id, path: [vehicle.current], hoverNode: null, pointerId };
-  setHint(`Ведите маршрут до цели ${vehicle.goal}.`);
+function buildVehiclePath(vehicle) {
+  const path = [vehicle.current];
+  if (Array.isArray(vehicle.route) && vehicle.route.length) {
+    for (const nodeId of vehicle.route) {
+      if (path[path.length - 1] !== nodeId) {
+        path.push(nodeId);
+      }
+    }
+  }
+  return path;
+}
+
+function startRouteDrag(pointerId, vehicle, initialPath = null) {
+  const base = Array.isArray(initialPath) && initialPath.length ? initialPath.slice() : [vehicle.current];
+  state.interaction = { active: true, type: 'route', vehicleId: vehicle.id, path: base, hoverNode: null, pointerId };
+  const origin = base[base.length - 1];
+  if (origin !== vehicle.current) {
+    setHint('Продолжайте маршрут от выбранного узла.');
+  } else {
+    setHint('Ведите маршрут по узлам. Можно закончить на любом из них.');
+  }
+}
+
+function startRouteDragFromNode(pointerId, vehicle, nodeId) {
+  if (!canControlVehicle(vehicle)) return false;
+  const path = buildVehiclePath(vehicle);
+  const index = path.indexOf(nodeId);
+  if (index === -1) return false;
+  const initial = path.slice(0, index + 1);
+  startRouteDrag(pointerId, vehicle, initial);
+  return true;
+}
+
+function selectVehicleFromMap(nodeId) {
+  if (!nodeId) return;
+  const occupant = state.vehicles.find((vehicle) => vehicle.current === nodeId);
+  if (!occupant) return;
+  if (state.selectedVehicleId !== occupant.id) {
+    state.selectedVehicleId = occupant.id;
+    renderVehicleList();
+    updateActionButtons();
+  }
+  highlightVehicle(occupant);
 }
 
 function updateRouteDrag(x, y) {
@@ -960,14 +1064,14 @@ function updateRouteDrag(x, y) {
     return;
   }
   if (path.includes(nearest.id) && nearest.id !== vehicle.goal) {
-    setHint('Нельзя зациклить маршрут, кроме цели.');
+    setHint('Этот узел уже есть в маршруте.');
     return;
   }
   path.push(nearest.id);
   if (nearest.id === vehicle.goal) {
-    setHint('Отпустите, чтобы подтвердить маршрут.');
+    setHint('Маршрут до цели готов. Можно отпустить.');
   } else {
-    setHint(`Продолжайте к цели ${vehicle.goal}.`);
+    setHint('Отпустите, чтобы закрепить, или продолжайте дальше.');
   }
 }
 
@@ -982,11 +1086,15 @@ function finishRouteDrag() {
     return;
   }
   const path = state.interaction.path;
-  const goalReached = path[path.length - 1] === vehicle.goal;
-  if (path.length > 1 && goalReached) {
+  if (path.length > 1) {
     commitRoute(vehicle, path);
+    if (path[path.length - 1] === vehicle.goal) {
+      setHint('Маршрут до цели обновлён.');
+    } else {
+      setHint('Маршрут сохранён. Можно продолжить планирование позже.');
+    }
   } else {
-    setHint(`Маршрут не завершён. Дотяните до цели ${vehicle.goal}.`);
+    setHint('Маршрут слишком короткий. Добавьте ещё один узел.');
   }
   state.interaction = { active: false, type: null, vehicleId: null, path: [], hoverNode: null, pointerId: null };
 }
@@ -1111,7 +1219,6 @@ function drawBackground() {
 
 function drawRoads() {
   ctx.save();
-  const roadWidth = 38;
   for (const [a, b] of state.map.edges || []) {
     const na = nodeById(a);
     const nb = nodeById(b);
@@ -1123,11 +1230,11 @@ function drawRoads() {
     ctx.rotate(angle);
     ctx.fillStyle = '#1f2a37';
     ctx.beginPath();
-    ctx.roundRect(0, -roadWidth / 2 - 3, length, roadWidth + 6, roadWidth / 2);
+    ctx.roundRect(0, -ROAD_WIDTH / 2 - 3, length, ROAD_WIDTH + 6, ROAD_WIDTH / 2);
     ctx.fill();
     ctx.fillStyle = '#2e3a48';
     ctx.beginPath();
-    ctx.roundRect(0, -roadWidth / 2, length, roadWidth, roadWidth / 2);
+    ctx.roundRect(0, -ROAD_WIDTH / 2, length, ROAD_WIDTH, ROAD_WIDTH / 2);
     ctx.fill();
     ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
     const dash = 28;
@@ -1171,18 +1278,26 @@ function drawVehicleRoutes() {
   for (const vehicle of state.vehicles) {
     const owner = state.players.find((p) => p.id === vehicle.ownerId);
     if (!owner) continue;
-    const basePath = Array.isArray(vehicle.history) && vehicle.history.length
-      ? vehicle.history
-      : [vehicle.current, ...vehicle.route];
-    if (basePath.length < 2) continue;
-    const first = nodeById(basePath[0]);
+    const controllable = canControlVehicle(vehicle);
+    const isSelected = state.selectedVehicleId === vehicle.id;
+    const rawPath = [vehicle.current, ...(Array.isArray(vehicle.route) ? vehicle.route : [])];
+    if (rawPath.length < 2) continue;
+    let path = rawPath;
+    if (!controllable) {
+      if (!isSelected) {
+        continue;
+      }
+      const maxNodes = Math.min(rawPath.length, 4);
+      path = rawPath.slice(0, maxNodes);
+    }
+    const first = nodeById(path[0]);
     if (!first) continue;
-    ctx.strokeStyle = `${owner.color}cc`;
-    ctx.lineWidth = 10;
+    ctx.strokeStyle = controllable ? `${owner.color}cc` : `${owner.color}88`;
+    ctx.lineWidth = controllable ? 10 : 8;
     ctx.beginPath();
     ctx.moveTo(first.x, first.y);
-    for (let i = 1; i < basePath.length; i += 1) {
-      const node = nodeById(basePath[i]);
+    for (let i = 1; i < path.length; i += 1) {
+      const node = nodeById(path[i]);
       if (!node) continue;
       ctx.lineTo(node.x, node.y);
     }
@@ -1277,60 +1392,61 @@ function drawVehicles() {
     ctx.save();
     ctx.translate(node.x, node.y);
     ctx.rotate(angle);
+    ctx.translate(0, VEHICLE_LANE_OFFSET);
     ctx.shadowColor = 'rgba(15, 23, 42, 0.28)';
-    ctx.shadowBlur = 12;
+    ctx.shadowBlur = 10;
     const baseColor = vehicle.color || '#3b82f6';
     const darker = darkenColor(baseColor, 0.35);
     const roof = lightenColor(baseColor, 0.25);
-    const bodyLength = 56;
-    const bodyWidth = 28;
-    const wheelWidth = 8;
-    const wheelHeight = bodyWidth + 8;
+    const bodyLength = 46;
+    const bodyWidth = 18;
+    const wheelWidth = 6;
+    const wheelHeight = bodyWidth + 10;
 
     ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
-    ctx.fillRect(-bodyLength / 2 + 6, -wheelHeight / 2, wheelWidth, wheelHeight);
-    ctx.fillRect(bodyLength / 2 - wheelWidth - 6, -wheelHeight / 2, wheelWidth, wheelHeight);
+    ctx.fillRect(-bodyLength / 2 + 4, -wheelHeight / 2, wheelWidth, wheelHeight);
+    ctx.fillRect(bodyLength / 2 - wheelWidth - 4, -wheelHeight / 2, wheelWidth, wheelHeight);
 
     ctx.fillStyle = darker;
     ctx.beginPath();
-    ctx.roundRect(-bodyLength / 2, -bodyWidth / 2 - 3, bodyLength, bodyWidth + 6, bodyWidth / 2.1);
+    ctx.roundRect(-bodyLength / 2, -bodyWidth / 2 - 2, bodyLength, bodyWidth + 4, bodyWidth / 2.1);
     ctx.fill();
 
     ctx.shadowBlur = 0;
     ctx.fillStyle = baseColor;
     ctx.beginPath();
-    ctx.roundRect(-bodyLength / 2, -bodyWidth / 2, bodyLength, bodyWidth, bodyWidth / 2.4);
+    ctx.roundRect(-bodyLength / 2, -bodyWidth / 2, bodyLength, bodyWidth, bodyWidth / 2.6);
     ctx.fill();
 
     ctx.fillStyle = roof;
     ctx.beginPath();
-    ctx.roundRect(-bodyLength / 2 + 8, -bodyWidth / 2 + 5, bodyLength - 16, bodyWidth - 10, bodyWidth / 3);
+    ctx.roundRect(-bodyLength / 2 + 6, -bodyWidth / 2 + 4, bodyLength - 12, bodyWidth - 8, bodyWidth / 3);
     ctx.fill();
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
-    const windowLength = (bodyLength - 24) / 2 - 4;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    const windowLength = (bodyLength - 20) / 2 - 4;
     ctx.beginPath();
-    ctx.roundRect(-bodyLength / 2 + 10, -bodyWidth / 2 + 6, windowLength, bodyWidth - 12, 6);
+    ctx.roundRect(-bodyLength / 2 + 8, -bodyWidth / 2 + 5, windowLength, bodyWidth - 10, 5);
     ctx.fill();
     ctx.beginPath();
-    ctx.roundRect(-bodyLength / 2 + 14 + windowLength, -bodyWidth / 2 + 6, windowLength, bodyWidth - 12, 6);
+    ctx.roundRect(-bodyLength / 2 + 12 + windowLength, -bodyWidth / 2 + 5, windowLength, bodyWidth - 10, 5);
     ctx.fill();
 
     ctx.fillStyle = 'rgba(255, 251, 235, 0.9)';
-    ctx.fillRect(bodyLength / 2 - 6, -6, 4, 6);
-    ctx.fillRect(bodyLength / 2 - 6, 0, 4, 6);
+    ctx.fillRect(bodyLength / 2 - 5, -5, 3, 5);
+    ctx.fillRect(bodyLength / 2 - 5, 0, 3, 5);
 
     ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
-    ctx.font = 'bold 16px Nunito';
+    ctx.font = 'bold 14px Nunito';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(vehicle.order), -bodyLength / 2 + 14, 0);
+    ctx.fillText(String(vehicle.order), -bodyLength / 2 + 12, 0);
 
     if (vehicle.id === state.selectedVehicleId) {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.roundRect(-bodyLength / 2 - 6, -bodyWidth / 2 - 6, bodyLength + 12, bodyWidth + 12, bodyWidth / 2.2);
+      ctx.roundRect(-bodyLength / 2 - 5, -bodyWidth / 2 - 5, bodyLength + 10, bodyWidth + 10, bodyWidth / 2.2);
       ctx.stroke();
     }
 

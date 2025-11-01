@@ -50,34 +50,76 @@ function distance(a, b) {
 function generateCityMap() {
   const width = MAP_BOUNDS.width;
   const height = MAP_BOUNDS.height;
-  const cols = 6;
-  const rows = 4;
-  const marginX = 120;
-  const marginY = 120;
+  const cols = 7;
+  const rows = 5;
+  const marginX = 80;
+  const marginY = 90;
   const stepX = (width - marginX * 2) / (cols - 1);
   const stepY = (height - marginY * 2) / (rows - 1);
   const nodes = [];
   const adjacency = new Map();
+  const nodeMap = new Map();
   let idCounter = 1;
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const id = `N${idCounter.toString().padStart(2, '0')}`;
       idCounter += 1;
-      const jitterX = randomBetween(-stepX * 0.35, stepX * 0.35);
-      const jitterY = randomBetween(-stepY * 0.35, stepY * 0.35);
+      const jitterX = randomBetween(-stepX * 0.25, stepX * 0.25);
+      const jitterY = randomBetween(-stepY * 0.25, stepY * 0.25);
       const x = marginX + col * stepX + jitterX;
       const y = marginY + row * stepY + jitterY;
-      nodes.push({ id, x, y });
+      const node = { id, x, y };
+      nodes.push(node);
       adjacency.set(id, new Set());
+      nodeMap.set(id, node);
     }
   }
 
   const edges = [];
   const edgeSet = new Set();
+  const EPSILON = 1e-6;
+  const orientation = (p, q, r) => {
+    const val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+    if (Math.abs(val) < EPSILON) return 0;
+    return val > 0 ? 1 : 2;
+  };
+  const onSegment = (p, q, r) =>
+    Math.min(p.x, r.x) - EPSILON <= q.x &&
+    q.x <= Math.max(p.x, r.x) + EPSILON &&
+    Math.min(p.y, r.y) - EPSILON <= q.y &&
+    q.y <= Math.max(p.y, r.y) + EPSILON;
+  const segmentsIntersect = (p1, p2, p3, p4) => {
+    const o1 = orientation(p1, p2, p3);
+    const o2 = orientation(p1, p2, p4);
+    const o3 = orientation(p3, p4, p1);
+    const o4 = orientation(p3, p4, p2);
+    if (o1 !== o2 && o3 !== o4) return true;
+    if (o1 === 0 && onSegment(p1, p3, p2)) return true;
+    if (o2 === 0 && onSegment(p1, p4, p2)) return true;
+    if (o3 === 0 && onSegment(p3, p1, p4)) return true;
+    if (o4 === 0 && onSegment(p3, p2, p4)) return true;
+    return false;
+  };
+  const wouldCross = (aId, bId) => {
+    const pa = nodeMap.get(aId);
+    const pb = nodeMap.get(bId);
+    if (!pa || !pb) return true;
+    for (const [cId, dId] of edges) {
+      if (aId === cId || aId === dId || bId === cId || bId === dId) continue;
+      const pc = nodeMap.get(cId);
+      const pd = nodeMap.get(dId);
+      if (!pc || !pd) continue;
+      if (segmentsIntersect(pa, pb, pc, pd)) {
+        return true;
+      }
+    }
+    return false;
+  };
   const addEdge = (a, b) => {
     if (!a || !b || a === b) return;
     const key = a < b ? `${a}-${b}` : `${b}-${a}`;
     if (edgeSet.has(key)) return;
+    if (wouldCross(a, b)) return;
     edgeSet.add(key);
     edges.push([a, b]);
     adjacency.get(a)?.add(b);
@@ -96,24 +138,37 @@ function generateCityMap() {
       if (row < rows - 1) {
         addEdge(current.id, nodes[indexOf(row + 1, col)]?.id);
       }
-      if (row < rows - 1 && col < cols - 1 && Math.random() < 0.55) {
+      if (row < rows - 1 && col < cols - 1 && Math.random() < 0.6) {
         addEdge(current.id, nodes[indexOf(row + 1, col + 1)]?.id);
       }
-      if (row < rows - 1 && col > 0 && Math.random() < 0.35) {
+      if (row < rows - 1 && col > 0 && Math.random() < 0.45) {
         addEdge(current.id, nodes[indexOf(row + 1, col - 1)]?.id);
       }
     }
   }
 
-  const typicalSpan = Math.hypot(stepX, stepY) * 1.4;
-  const extras = Math.floor(nodes.length * 1.5);
+  const typicalSpan = Math.hypot(stepX, stepY) * 1.2;
+  const extras = Math.floor(nodes.length * 2.4);
   for (let i = 0; i < extras; i += 1) {
     const a = nodes[Math.floor(Math.random() * nodes.length)];
     if (!a) continue;
-    const candidates = nodes.filter((node) => node.id !== a.id && distance(node, a) <= typicalSpan * randomBetween(0.7, 1.6));
+    const radius = typicalSpan * randomBetween(0.6, 1.5);
+    const candidates = nodes
+      .filter((node) => node.id !== a.id && distance(node, a) <= radius)
+      .sort((node1, node2) => distance(node1, a) - distance(node2, a));
     if (!candidates.length) continue;
     const b = candidates[Math.floor(Math.random() * candidates.length)];
     addEdge(a.id, b.id);
+  }
+
+  for (const node of nodes) {
+    const potentials = nodes
+      .filter((other) => other.id !== node.id && !adjacency.get(node.id)?.has(other.id))
+      .sort((a, b) => distance(a, node) - distance(b, node))
+      .slice(0, 3);
+    for (const candidate of potentials) {
+      addEdge(node.id, candidate.id);
+    }
   }
 
   const buildComponents = () => {
