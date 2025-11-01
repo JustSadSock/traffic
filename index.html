@@ -2,67 +2,134 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Маршрутчики v0.2 — прототип</title>
-  <link rel="stylesheet" href="style.css"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Маршрутчики — новая редакция</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="ui">
-    <div class="left">
-      <h1>Маршрутчики v0.2</h1>
-      <div class="panel">
-        <div><strong>Ход:</strong> <span id="turn">1</span> / <span id="turnLimit">30</span></div>
-        <div><strong>Деньги:</strong> <span id="money">0</span>₵</div>
-        <div><strong>Рейсы:</strong> <span id="trips">0</span></div>
-        <div><strong>Штрафы:</strong> <span id="penalties">0</span>₵</div>
+  <div id="app">
+    <header class="top-bar">
+      <div class="brand">
+        <h1>Маршрутчики</h1>
+        <span class="tagline">современный диспетчерский симулятор</span>
       </div>
+      <nav class="mode-indicator">
+        <span id="modeLabel">—</span>
+      </nav>
+    </header>
 
-      <div class="panel">
-        <div class="row">
-          <button id="toolRoute" class="tool active">Маршрут</button>
-          <button id="toolLight" class="tool">Светофор (10₵)</button>
-        </div>
-        <div class="row">
-          <button id="toolOneWay" class="tool">Односторонний (15₵)</button>
-          <button id="toolWait" class="tool">Ожидание (узел)</button>
-        </div>
-        <div class="row">
-          <button id="btnRecalc" class="tool">Пересчитать маршрут (5₵+1₵/ребро)</button>
-        </div>
-        <div class="row">
-          <button id="btnEndTurn" class="primary">Закончить ход</button>
-          <button id="btnNewSeed">Новая карта</button>
-        </div>
-        <div class="small">
-          Подсказки: клики по перекресткам переключают светофор (в режиме Светофор), 
-          клик по ребру — поставить временный односторонний знак, 
-          клик по узлу маршрута своей машины — задать ожидание (в режиме Ожидание).
-          По клику по «ничейной» машине видно прогноз маршрута.
-        </div>
-      </div>
-
-      <div class="panel small">
-        <div><strong>Правила (коротко)</strong></div>
-        <ul>
-          <li>30 ходов. 1 ребро за ход.</li>
-          <li>Доход: 100₵ + 5₵×L, бонус скорости (20−T)×2₵, чистый рейс ×1.2</li>
-          <li>Штрафы: ДТП −100₵ и простой 2 хода, красный −30₵, блокировка −10₵/ход</li>
-          <li>Светофор: автосмена 3/3, ручной свитч 10₵, КД 3 хода, удорожание в окне 10 ходов</li>
-          <li>Односторонний: 15₵, длится 3 хода, КД ребра 5 ходов</li>
-          <li>Правки маршрута оплачиваются</li>
-        </ul>
+    <div class="status-bar">
+      <div>Ход: <span id="turnValue">0</span> / <span id="turnLimit">0</span></div>
+      <div>Активный игрок: <span id="activePlayer">—</span></div>
+      <div>Пассажиры: <span id="passengerCount">0</span></div>
+      <div class="controls">
+        <button id="btnEndTurn" class="primary">Завершить ход</button>
+        <button id="btnBackToMenu">В меню</button>
       </div>
     </div>
 
-    <div class="right">
-      <canvas id="game" width="1024" height="768"></canvas>
-      <div class="legend small">
-        <span class="badge node"></span> узел
-        <span class="badge light-green"></span> зеленый
-        <span class="badge light-red"></span> красный
-        <span class="badge oneway"></span> односторонний
-        <span class="badge player"></span> ваша машина
-        <span class="badge npc"></span> «ничейная» машина
+    <main class="layout">
+      <section class="board">
+        <canvas id="gameCanvas" width="960" height="720"></canvas>
+      </section>
+      <aside class="sidebar">
+        <section class="panel">
+          <h2>Сводка</h2>
+          <div class="summary">
+            <div><strong>Раунд:</strong> <span id="roundSummary">—</span></div>
+            <div><strong>Сложность:</strong> <span id="difficultySummary">—</span></div>
+          </div>
+        </section>
+        <section class="panel">
+          <h2>Игроки</h2>
+          <ul id="playerList" class="player-list"></ul>
+        </section>
+        <section class="panel log-panel">
+          <h2>Журнал</h2>
+          <div id="log" class="log"></div>
+        </section>
+      </aside>
+    </main>
+
+    <div id="menuOverlay" class="overlay visible">
+      <div class="overlay-card">
+        <h2>Выберите режим игры</h2>
+        <p>Постройте эффективную сеть маршрутов, доставляйте пассажиров и выигрывайте раунд за раундом.</p>
+        <div class="mode-grid">
+          <button class="mode-button" data-mode="solo">Одиночная игра</button>
+          <button class="mode-button" data-mode="local">Локальный мультиплеер</button>
+          <button class="mode-button" data-mode="online">Онлайн</button>
+        </div>
+
+        <form id="soloForm" class="mode-form" data-mode="solo">
+          <h3>Одиночная игра</h3>
+          <label>Ваш позывной
+            <input type="text" name="name" value="Диспетчер" required />
+          </label>
+          <label>Сложность
+            <select name="difficulty">
+              <option value="normal" selected>Нормальная</option>
+              <option value="hard">Сложная</option>
+              <option value="relaxed">Спокойная</option>
+            </select>
+          </label>
+          <label>NPC-маршруток
+            <input type="number" name="npc" min="1" max="5" value="2" />
+          </label>
+          <button type="submit" class="primary">Начать</button>
+        </form>
+
+        <form id="localForm" class="mode-form" data-mode="local">
+          <h3>Локальный мультиплеер</h3>
+          <label>Количество игроков
+            <select name="count">
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select>
+          </label>
+          <div class="local-names"></div>
+          <button type="submit" class="primary">Старт</button>
+        </form>
+
+        <form id="onlineForm" class="mode-form" data-mode="online">
+          <h3>Онлайн</h3>
+          <div class="online-tabs">
+            <button type="button" data-tab="create" class="active">Создать лобби</button>
+            <button type="button" data-tab="join">Присоединиться</button>
+          </div>
+          <div class="online-panels">
+            <div class="online-panel" data-panel="create">
+              <label>Ваш позывной
+                <input type="text" name="hostName" value="Хост" required />
+              </label>
+              <label>Макс. игроков
+                <select name="max">
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4" selected>4</option>
+                </select>
+              </label>
+              <button type="button" data-action="create" class="primary">Создать лобби</button>
+            </div>
+            <div class="online-panel hidden" data-panel="join">
+              <label>Ваш позывной
+                <input type="text" name="guestName" value="Гость" required />
+              </label>
+              <label>Код лобби
+                <input type="text" name="code" placeholder="ABCD" maxlength="6" required />
+              </label>
+              <button type="button" data-action="join" class="primary">Войти</button>
+            </div>
+          </div>
+          <div class="online-status hidden" id="onlineStatus"></div>
+          <div class="online-lobby hidden" id="onlineLobby">
+            <p>Поделитесь кодом с друзьями:</p>
+            <div class="lobby-code" id="lobbyCode">—</div>
+            <ul id="lobbyPlayers" class="player-list"></ul>
+            <button type="button" id="btnStartOnline" class="primary">Запустить игру</button>
+          </div>
+        </form>
       </div>
     </div>
   </div>
